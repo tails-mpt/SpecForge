@@ -308,3 +308,13 @@ TEMPLATE_REGISTRY.register(
         end_of_turn_token="<|endoftext|>",
     ),
 )
+
+TEMPLATE_REGISTRY.register(
+    name="minimax",
+    template=ChatTemplate(
+        assistant_header="]~b]ai\n",
+        user_header="]~b]user\n",
+        system_prompt="You are a helpful assistant. Your name is MiniMax-M2.5 and is built by MiniMax.",
+        end_of_turn_token="[e~[\n",
+    ),
+)
