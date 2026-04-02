@@ -60,18 +60,21 @@ class OnlineEagle3Model(Eagle3Model):
         length: int = 7,
         attention_backend="sdpa",
         target_model: Optional[Eagle3Model] = None,
+        teacher_temperature: float = 1.0,
     ):
         """
         Args:
             target_model: the target model to extract hidden states.
             draft_model: the draft model to be trained.
             length: TTT length, it means how many turns to unroll during TTT.
+            teacher_temperature: temperature for softening target distribution (>1 = softer).
         """
         super().__init__()
         self.draft_model = draft_model
         self.length = length
         self.attention_backend = attention_backend
         self.target_model = target_model
+        self.teacher_temperature = teacher_temperature
 
         if self.attention_backend == "usp":
             self.extract_func = EXTRACT_FUNC_DICT["basic"]
@@ -120,6 +123,7 @@ class OnlineEagle3Model(Eagle3Model):
             t2d=self.draft_model.t2d,
             loss_mask=loss_mask,
             length=self.length,
+            teacher_temperature=self.teacher_temperature,
         )
         del target
 
@@ -263,12 +267,14 @@ class QwenVLOnlineEagle3Model(Eagle3Model):
         processor,
         length: int = 7,
         attention_backend: str = "sdpa",
+        teacher_temperature: float = 1.0,
     ):
         """
         Args:
             target_model: the target model to extract hidden states.
             draft_model: the draft model to be trained.
             length: TTT length, it means how many turns to unroll during TTT.
+            teacher_temperature: temperature for softening target distribution (>1 = softer).
         """
         super().__init__()
         self.target_model = target_model
@@ -276,6 +282,7 @@ class QwenVLOnlineEagle3Model(Eagle3Model):
         self.processor = processor
         self.length = length
         self.attention_backend = attention_backend
+        self.teacher_temperature = teacher_temperature
 
     @torch.no_grad()
     def _prepare_data(
@@ -416,6 +423,7 @@ class QwenVLOnlineEagle3Model(Eagle3Model):
             t2d=self.draft_model.t2d,
             loss_mask=loss_mask,
             length=self.length,
+            teacher_temperature=self.teacher_temperature,
         )
         del target
 
@@ -537,12 +545,13 @@ class QwenVLOnlineEagle3Model(Eagle3Model):
         return plosses, vlosses, acces
 
 
-def _compute_target_p_padded(target, t2d, loss_mask, length):
+def _compute_target_p_padded(target, t2d, loss_mask, length, teacher_temperature=1.0):
     with torch.no_grad():
         target_p, position_mask = _compute_target_p(
             target=target,
             t2d=t2d,
             loss_mask=loss_mask,
+            teacher_temperature=teacher_temperature,
         )
 
         assert len(target_p.shape) == 3
@@ -558,7 +567,7 @@ def _compute_target_p_padded(target, t2d, loss_mask, length):
 
 
 @torch.compile(dynamic=None)
-def _compute_target_p(target, t2d, loss_mask):
+def _compute_target_p(target, t2d, loss_mask, teacher_temperature=1.0):
     target_head = target
     target_max_token = target_head.argmax(-1)
     target_mask = t2d[target_max_token]
@@ -566,6 +575,8 @@ def _compute_target_p(target, t2d, loss_mask):
     position_mask = target_mask * loss_mask
     target_head = target_head[..., t2d]
     target_head = target_head.float()
+    if teacher_temperature != 1.0:
+        target_head = target_head / teacher_temperature
     target_p = nn.Softmax(dim=2)(target_head)
     target_p = target_p.detach()
     return target_p, position_mask

@@ -148,6 +148,12 @@ def parse_args() -> Tuple[ArgumentParser, Namespace]:
         default=7,
         help="The length for Test-Time Training (TTT).",
     )
+    training_group.add_argument(
+        "--teacher-temperature",
+        type=float,
+        default=1.0,
+        help="Temperature for softening target distribution during training (>1 = softer). Default 1.0 = no change.",
+    )
     training_group.add_argument("--resume", action="store_true")
     training_group.add_argument(
         "--ckpt-dir",
@@ -775,6 +781,7 @@ def main():
             processor=processor,
             length=args.ttt_length,
             attention_backend=args.attention_backend,
+            teacher_temperature=args.teacher_temperature,
         )
     else:
         if is_online:
@@ -783,6 +790,7 @@ def main():
                 draft_model=draft_model,
                 length=args.ttt_length,
                 attention_backend=args.attention_backend,
+                teacher_temperature=args.teacher_temperature,
             )
         else:
             # offline: the target_model is TargetHead not a model
@@ -790,6 +798,7 @@ def main():
                 draft_model=draft_model,
                 length=args.ttt_length,
                 attention_backend=args.attention_backend,
+                teacher_temperature=args.teacher_temperature,
             )
     eagle3_model = FSDP(
         eagle3_model,
