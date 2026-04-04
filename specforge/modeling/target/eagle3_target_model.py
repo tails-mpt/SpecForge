@@ -154,6 +154,12 @@ class HFEagle3TargetModel(Eagle3TargetModel):
         """
         if hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
             return self.model.model.layers
+        elif hasattr(self.model, "model") and hasattr(self.model.model, "language_model") and hasattr(self.model.model.language_model, "layers"):
+            # Multimodal models (e.g., Gemma-4): model.model.language_model.layers
+            return self.model.model.language_model.layers
+        elif hasattr(self.model, "language_model") and hasattr(self.model.language_model, "layers"):
+            # Alternative multimodal layout: model.language_model.layers
+            return self.model.language_model.layers
         elif hasattr(self.model, "layers"):
             return self.model.layers
         elif hasattr(self.model, "transformer") and hasattr(

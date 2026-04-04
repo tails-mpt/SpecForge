@@ -1337,6 +1337,9 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
         super().__init__(config)
         self.config = config
         self.quant_config = quant_config
+        # Ensure transformers >= 5.5.0 compatibility
+        if not hasattr(self, "all_tied_weights_keys"):
+            self.all_tied_weights_keys = {}
 
         self.vocab_size = config.vocab_size
         self.draft_vocab_size = config.draft_vocab_size
