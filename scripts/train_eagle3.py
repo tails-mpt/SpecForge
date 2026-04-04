@@ -553,6 +553,14 @@ def run_forward(
     is_online: bool = True,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
     if args.is_vlm and args.target_model_backend == "custom":
+        # One-time debug
+        if not hasattr(eagle3_model, '_debug_done'):
+            eagle3_model._debug_done = True
+            import sys
+            print(f'[DEBUG TRAIN] hidden_states: shape={hidden_states.shape}, mean={hidden_states.float().mean():.6f}, std={hidden_states.float().std():.6f}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] target: shape={target.shape}, mean={target.float().mean():.6f}, std={target.float().std():.6f}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] input_ids: shape={input_ids.shape}, first={input_ids[0,:5].tolist()}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] loss_mask: shape={loss_mask.shape}, sum={loss_mask.sum()}, ratio={loss_mask.float().mean():.4f}', file=sys.stderr, flush=True)
         plosses, _, acces = eagle3_model(
             input_ids=data["input_ids"].cuda(),
             attention_mask=data["attention_mask"].cuda(),
@@ -603,6 +611,14 @@ def run_forward(
             input_ids, target, loss_mask = target_model.preprocess(
                 input_ids, target, loss_mask
             )
+        # One-time debug
+        if not hasattr(eagle3_model, '_debug_done'):
+            eagle3_model._debug_done = True
+            import sys
+            print(f'[DEBUG TRAIN] hidden_states: shape={hidden_states.shape}, mean={hidden_states.float().mean():.6f}, std={hidden_states.float().std():.6f}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] target: shape={target.shape}, mean={target.float().mean():.6f}, std={target.float().std():.6f}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] input_ids: shape={input_ids.shape}, first={input_ids[0,:5].tolist()}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] loss_mask: shape={loss_mask.shape}, sum={loss_mask.sum()}, ratio={loss_mask.float().mean():.4f}', file=sys.stderr, flush=True)
         plosses, _, acces = eagle3_model(
             input_ids=input_ids,
             attention_mask=attention_mask,

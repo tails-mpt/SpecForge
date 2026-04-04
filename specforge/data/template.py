@@ -328,3 +328,13 @@ TEMPLATE_REGISTRY.register(
         end_of_turn_token="<end_of_turn>\n",
     ),
 )
+
+TEMPLATE_REGISTRY.register(
+    name="gemma4",
+    template=ChatTemplate(
+        assistant_header="<|turn>model\n",
+        user_header="<|turn>user\n",
+        system_prompt="",
+        end_of_turn_token="<turn|>\n",
+    ),
+)
