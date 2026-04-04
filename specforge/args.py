@@ -181,7 +181,7 @@ class SGLangBackendArgs:
                 args.target_batch_size if hasattr(args, "target_batch_size") else None
             ),
             sglang_max_total_tokens=(
-                args.target_batch_size * args.max_length
+                args.target_batch_size * args.max_length * getattr(args, "ttt_length", 7)
                 if hasattr(args, "target_batch_size") and hasattr(args, "max_length")
                 else None
             ),
