@@ -369,7 +369,14 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
             token_to_kv_pool_allocator=self.model_runner.token_to_kv_pool_allocator,
             page_size=self.model_runner.server_args.page_size,
         )
-        tree_cache = RadixCache(cache_params)
+        # Use SWARadixCache for models with hybrid sliding window attention (e.g., Gemma-4)
+        from sglang.srt.mem_cache.allocator import SWATokenToKVPoolAllocator
+        if isinstance(self.model_runner.token_to_kv_pool_allocator, SWATokenToKVPoolAllocator):
+            from sglang.srt.mem_cache.swa_radix_cache import SWARadixCache
+            swa_size = getattr(self.model_runner.model_config.hf_text_config, 'sliding_window', 1024)
+            tree_cache = SWARadixCache(cache_params, sliding_window_size=swa_size)
+        else:
+            tree_cache = RadixCache(cache_params)
 
         batch = ScheduleBatch.init_new(
             reqs=reqs,
