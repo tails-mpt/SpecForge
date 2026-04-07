@@ -556,13 +556,13 @@ class LlamaAttention(nn.Module):
             scaling_type = rope_get("rope_type", rope_get("type"))
             scaling_factor = rope_get("factor")
 
-            if scaling_type == "default":
+            if scaling_type == "default" or scaling_type is None:
+                # Handle "default" rope_type as standard RoPE (no scaling)
                 self.rotary_emb = LlamaRotaryEmbedding(
                     self.head_dim,
                     max_position_embeddings=self.max_position_embeddings,
                     base=getattr(self.config, "rope_theta", 10000),
                 )
-                return
             elif scaling_type == "linear":
                 if scaling_factor is None:
                     raise ValueError(
@@ -984,10 +984,6 @@ class LlamaUSPFlashAttention(LlamaAttention):
         assert (
             dist.is_initialized()
         ), f"LlamaUSPAttention requires torch.distributed; call init_distributed first."
-        if isinstance(self.rotary_emb, LlamaMutiRotaryEmbedding):
-            raise NotImplementedError(
-                f"LlamaMutiRotaryEmbedding is currently not supported for LlamaUSPFlashAttention."
-            )
         self.ring_pg = get_sp_ring_group()
         self.ulysses_pg = get_sp_ulysses_group()
         self.sp_ring_degree = torch.distributed.get_world_size(self.ring_pg)
@@ -1054,16 +1050,39 @@ class LlamaUSPFlashAttention(LlamaAttention):
 
         # Global length calculation (for RoPE)
         global_q_len = q_len * self.sp_ring_degree * self.sp_ulysses_degree
+
         # =============================================================
         # 2. RoPE & Cache Management
         # =============================================================
+        if self.sp_ring_degree > 1:
+            if isinstance(self.rotary_emb, LlamaMutiRotaryEmbedding):
+                position_ids = position_ids.chunk(self.sp_ring_degree, dim=2)[
+                    self.ring_rank
+                ].clone()
+            else:
+                position_ids = position_ids.chunk(self.sp_ring_degree, dim=1)[
+                    self.ring_rank
+                ].clone()
+
         lck = 0 if cache_hidden is None else len(cache_hidden[0])
 
-        cos, sin = self.rotary_emb(query_states, seq_len=global_q_len + lck)
-        cos, sin = cos.to(query_states.device), sin.to(query_states.device)
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin, position_ids + lck, unsqueeze_dim=2
-        )
+        if isinstance(self.rotary_emb, LlamaMutiRotaryEmbedding):
+            cos, sin = self.rotary_emb(query_states, position_ids + lck)
+            cos, sin = cos.to(query_states.device), sin.to(query_states.device)
+            query_states, key_states = apply_multimodal_rotary_pos_emb(
+                query_states,
+                key_states,
+                cos,
+                sin,
+                self.config.rope_scaling["mrope_section"],
+                unsqueeze_dim=2,
+            )
+        else:
+            cos, sin = self.rotary_emb(query_states, seq_len=global_q_len + lck)
+            cos, sin = cos.to(query_states.device), sin.to(query_states.device)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin, position_ids + lck, unsqueeze_dim=2
+            )
 
         # Update Cache (Eagle3 Logic: Cache is a list of tensors for tree branches)
         if cache_hidden is not None:
@@ -1318,6 +1337,9 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
         super().__init__(config)
         self.config = config
         self.quant_config = quant_config
+        # Ensure transformers >= 5.5.0 compatibility
+        if not hasattr(self, "all_tied_weights_keys"):
+            self.all_tied_weights_keys = {}
 
         self.vocab_size = config.vocab_size
         self.draft_vocab_size = config.draft_vocab_size

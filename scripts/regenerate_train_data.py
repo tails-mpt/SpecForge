@@ -203,10 +203,12 @@ def call_sglang(
     messages = data["conversations"]
     regenerated_messages = []
 
-    # ignore data which starts with an assistant message
-    if messages[0]["role"] == "assistant":
+    # Strip leading assistant messages instead of rejecting the sample
+    while messages and messages[0]["role"] == "assistant":
+        messages = messages[1:]
+    if not messages:
         data["status"] = "error"
-        data["error"] = "Data starts with an assistant message"
+        data["error"] = "No user messages after stripping leading assistant turns"
         return data
 
     for message in messages:

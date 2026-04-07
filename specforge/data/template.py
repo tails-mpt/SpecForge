@@ -1,5 +1,5 @@
 # Adapted from: https://github.com/sgl-project/sglang/blob/main/python/sglang/lang/chat_template.py#L13
-from typing import List, Optional
+from typing import List
 
 from pydantic import BaseModel
 
@@ -13,17 +13,15 @@ class ChatTemplate(BaseModel):
         user_header(str): The header for the user.
         system_prompt(str): The system prompt.
         end_of_turn_token(str): The end token of a turn of conversation.
-        ignore_token(List[str]): The list of tokens to ignore when parsing the model output, e.g., for thinking token.
     """
 
-    assistant_header: Optional[str] = None
-    user_header: Optional[str] = None
-    system_prompt: Optional[str] = None
-    end_of_turn_token: Optional[str] = None
+    assistant_header: str | None
+    user_header: str | None
+    system_prompt: str | None
+    end_of_turn_token: str | None
     parser_type: str = "general"
     assistant_pattern_type: str = "general"
     enable_thinking: bool = False
-    ignore_token: Optional[List[str]] = None
 
 
 class TemplateRegistry:
@@ -207,11 +205,10 @@ TEMPLATE_REGISTRY.register(
 TEMPLATE_REGISTRY.register(
     name="qwen3-instruct",
     template=ChatTemplate(
-        assistant_header="<|im_start|>assistant\n",
+        assistant_header="<|im_start|>assistant\n<think>\n\n</think>\n",
         user_header="<|im_start|>user\n",
         system_prompt="You are a helpful assistant.",
         end_of_turn_token="<|im_end|>\n",
-        ignore_token=["<think>\n\n</think>\n\n"],
     ),
 )
 
@@ -282,16 +279,6 @@ TEMPLATE_REGISTRY.register(
 )
 
 TEMPLATE_REGISTRY.register(
-    name="gemma",
-    template=ChatTemplate(
-        assistant_header="<start_of_turn>model\n",
-        user_header="<start_of_turn>user\n",
-        system_prompt="You are a helpful assistant.",
-        end_of_turn_token="<end_of_turn>\n",
-    ),
-)
-
-TEMPLATE_REGISTRY.register(
     name="longcat",
     template=ChatTemplate(
         assistant_header=" ASSISTANT:",
@@ -312,15 +299,42 @@ TEMPLATE_REGISTRY.register(
     ),
 )
 
+TEMPLATE_REGISTRY.register(
+    name="glm4",
+    template=ChatTemplate(
+        assistant_header="<|assistant|></think>",
+        user_header="<|user|>",
+        system_prompt="",  # GLM tokenizer handles system prompts natively - don't duplicate
+        end_of_turn_token="<|endoftext|>",
+    ),
+)
 
 TEMPLATE_REGISTRY.register(
-    name="qwen3.5",
+    name="minimax",
     template=ChatTemplate(
-        assistant_header="<|im_start|>assistant\n<think>\n",
-        user_header="<|im_start|>user\n",
+        assistant_header="]~b]ai\n",
+        user_header="]~b]user\n",
+        system_prompt="You are a helpful assistant. Your name is MiniMax-M2.5 and is built by MiniMax.",
+        end_of_turn_token="[e~[\n",
+    ),
+)
+
+TEMPLATE_REGISTRY.register(
+    name="gemma",
+    template=ChatTemplate(
+        assistant_header="<start_of_turn>model\n",
+        user_header="<start_of_turn>user\n",
         system_prompt="",
-        end_of_turn_token="<|im_end|>\n",
-        parser_type="thinking",
-        enable_thinking=True,
+        end_of_turn_token="<end_of_turn>\n",
+    ),
+)
+
+TEMPLATE_REGISTRY.register(
+    name="gemma4",
+    template=ChatTemplate(
+        assistant_header="<|turn>model\n",
+        user_header="<|turn>user\n",
+        system_prompt="",
+        end_of_turn_token="<turn|>\n",
     ),
 )

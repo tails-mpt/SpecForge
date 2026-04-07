@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoProcessor, AutoTokenizer
 
-from datasets import Dataset
+from datasets import load_dataset
 from specforge import (
     AutoDraftModelConfig,
     AutoEagle3DraftModel,
@@ -35,6 +35,7 @@ from specforge.distributed import (
     destroy_distributed,
     get_dp_group,
     get_draft_dp_group,
+    get_draft_sp_group,
     get_tp_group,
     init_distributed,
 )
@@ -52,7 +53,6 @@ from specforge.utils import (
     print_on_rank0,
     print_with_rank,
     rank_0_priority,
-    safe_conversations_generator,
 )
 
 
@@ -147,6 +147,12 @@ def parse_args() -> Tuple[ArgumentParser, Namespace]:
         type=int,
         default=7,
         help="The length for Test-Time Training (TTT).",
+    )
+    training_group.add_argument(
+        "--teacher-temperature",
+        type=float,
+        default=1.0,
+        help="Temperature for softening target distribution during training (>1 = softer). Default 1.0 = no change.",
     )
     training_group.add_argument("--resume", action="store_true")
     training_group.add_argument(
@@ -339,37 +345,12 @@ def sanity_check(args: Namespace) -> None:
     """
     args.dp_size = dist.get_world_size() // args.tp_size
     args.target_batch_size = args.tp_size * args.batch_size
-    if args.attention_backend == "usp":
-        sp_sanity_check(args)
-
-
-def sp_sanity_check(args: Namespace) -> None:
     args.draft_accumulation_steps = (
         args.draft_accumulation_steps * args.sp_ulysses_size * args.sp_ring_size
     )
-    assert (
-        args.batch_size == 1
-    ), f"USP only supports batch_size=1, got batch_size={args.batch_size}"
-
-    assert args.sp_ring_size * args.sp_ulysses_size > 1, (
-        f"USP requires sp_ring_size * sp_ulysses_size > 1. "
-        f"Got sp_ring_size={args.sp_ring_size}, sp_ulysses_size={args.sp_ulysses_size}."
-    )
-
-    assert args.train_hidden_states_path is not None, f"USP only support offline mode"
-
-    if args.eval_data_path is not None and args.eval_hidden_states_path is not None:
-        raise ValueError(
-            "Cannot set both eval_data_path and eval_hidden_states_path. "
-            "For online mode, set only eval_data_path. "
-            "For offline mode, set only eval_hidden_states_path."
-        )
 
 
 def build_draft_model(args: Namespace) -> Tuple[AutoDraftModelConfig, nn.Module]:
-    # ckpt info(epoch, step)
-    ckpt_info = (0, 0)
-
     # Handle draft model config
     if args.draft_model_config is None:
         # Auto-generate and save config file
@@ -383,7 +364,6 @@ def build_draft_model(args: Namespace) -> Tuple[AutoDraftModelConfig, nn.Module]
 
     # Handle base ckpt, config file
     draft_model_last_checkpoint = None
-    is_resume_checkpoint = False
     if args.ckpt_dir is not None:
         if os.path.isdir(args.ckpt_dir):
             draft_model_config = AutoDraftModelConfig.from_file(
@@ -399,9 +379,8 @@ def build_draft_model(args: Namespace) -> Tuple[AutoDraftModelConfig, nn.Module]
     # detecting last ckpt for draft model
     if args.resume and os.path.isdir(args.output_dir):
         print_on_rank0(args.output_dir)
-        draft_model_last_checkpoint, ckpt_info = get_last_checkpoint(args.output_dir)
-        print(f"Last checkpoint detected: {draft_model_last_checkpoint}")
-        is_resume_checkpoint = True
+        draft_model_last_checkpoint = get_last_checkpoint(args.output_dir)
+        print_on_rank0(f"Last checkpoint detected: {draft_model_last_checkpoint}")
 
     if draft_model_last_checkpoint:
         draft_model = AutoEagle3DraftModel.from_pretrained(
@@ -416,24 +395,9 @@ def build_draft_model(args: Namespace) -> Tuple[AutoDraftModelConfig, nn.Module]
             torch_dtype=torch.bfloat16,
         ).cuda()
 
-    # Load training state (optimizer, scheduler, epoch, step) for true resume
-    resume_state = None
-    if is_resume_checkpoint and draft_model_last_checkpoint:
-        training_state_path = os.path.join(
-            draft_model_last_checkpoint, "training_state.pt"
-        )
-        if os.path.exists(training_state_path):
-            resume_state = torch.load(
-                training_state_path, map_location="cpu", weights_only=False
-            )
-            print_on_rank0(
-                f"Loaded training state from {training_state_path}: "
-                f"epoch={resume_state['epoch']}, step={resume_state['global_step']}"
-            )
-
     draft_model.load_embedding(args.target_model_path, embedding_key=args.embedding_key)
     draft_model.freeze_embedding()
-    return draft_model_config, draft_model, ckpt_info, resume_state
+    return draft_model_config, draft_model
 
 
 def build_dataloaders(
@@ -454,10 +418,7 @@ def build_dataloaders(
         f"{args.target_model_path}"  # Tokenizer may also different
     )
     cache_key = hashlib.md5(cache_params_string.encode()).hexdigest()
-    train_dataset = Dataset.from_generator(
-        generator=safe_conversations_generator,
-        gen_kwargs={"file_path": args.train_data_path},
-    )
+    train_dataset = load_dataset("json", data_files=args.train_data_path)["train"]
     is_online = (
         args.train_data_path is not None and args.train_hidden_states_path is None
     )
@@ -487,8 +448,6 @@ def build_dataloaders(
             train_eagle3_dataset = build_offline_eagle3_dataset(
                 args.train_hidden_states_path,
                 args.max_length,
-                ttt_length=args.ttt_length,
-                use_usp_preprocess=(args.attention_backend == "usp"),
             )
 
     train_dataloader = prepare_dp_dataloaders(
@@ -505,10 +464,7 @@ def build_dataloaders(
     )
     if args.eval_data_path is not None or args.eval_hidden_states_path is not None:
         if args.eval_data_path is not None:
-            eval_dataset = Dataset.from_generator(
-                generator=safe_conversations_generator,
-                gen_kwargs={"file_path": args.eval_data_path},
-            )
+            eval_dataset = load_dataset("json", data_files=args.eval_data_path)["train"]
             eval_eagle3_dataset = build_eagle3_dataset(
                 eval_dataset,
                 tokenizer,
@@ -524,8 +480,6 @@ def build_dataloaders(
             eval_eagle3_dataset = build_offline_eagle3_dataset(
                 args.eval_hidden_states_path,
                 args.max_length,
-                ttt_length=args.ttt_length,
-                use_usp_preprocess=(args.attention_backend == "usp"),
             )
         eval_dataloader = prepare_dp_dataloaders(
             eval_eagle3_dataset,
@@ -599,6 +553,14 @@ def run_forward(
     is_online: bool = True,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
     if args.is_vlm and args.target_model_backend == "custom":
+        # One-time debug
+        if not hasattr(eagle3_model, '_debug_done'):
+            eagle3_model._debug_done = True
+            import sys
+            print(f'[DEBUG TRAIN] hidden_states: shape={hidden_states.shape}, mean={hidden_states.float().mean():.6f}, std={hidden_states.float().std():.6f}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] target: shape={target.shape}, mean={target.float().mean():.6f}, std={target.float().std():.6f}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] input_ids: shape={input_ids.shape}, first={input_ids[0,:5].tolist()}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] loss_mask: shape={loss_mask.shape}, sum={loss_mask.sum()}, ratio={loss_mask.float().mean():.4f}', file=sys.stderr, flush=True)
         plosses, _, acces = eagle3_model(
             input_ids=data["input_ids"].cuda(),
             attention_mask=data["attention_mask"].cuda(),
@@ -641,25 +603,28 @@ def run_forward(
             hidden_states = get_dp_data_shard_from_tp(eagle3_data.hidden_states)
         else:
             # we generate the logits using the hidden states loaded from disk
+            input_ids = data["input_ids"].cuda()
             attention_mask = data["attention_mask"].cuda()
+            loss_mask = data["loss_mask"].cuda()
             hidden_states = data["hidden_state"].cuda()
+            target = target_model(data["target"].cuda())
             input_ids, target, loss_mask = target_model.preprocess(
-                data["input_ids"], data["target"], data["loss_mask"]
+                input_ids, target, loss_mask
             )
-            input_ids = input_ids.cuda()
-            target = target_model(
-                target.cuda()
-            )  # The `data['target']` value occupies a large amount of GPU memory, with a shape of [seqlen, vocab_size]. It needs to be processed before being loaded into the GPU.
-            loss_mask = loss_mask.cuda()
+        # One-time debug
+        if not hasattr(eagle3_model, '_debug_done'):
+            eagle3_model._debug_done = True
+            import sys
+            print(f'[DEBUG TRAIN] hidden_states: shape={hidden_states.shape}, mean={hidden_states.float().mean():.6f}, std={hidden_states.float().std():.6f}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] target: shape={target.shape}, mean={target.float().mean():.6f}, std={target.float().std():.6f}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] input_ids: shape={input_ids.shape}, first={input_ids[0,:5].tolist()}', file=sys.stderr, flush=True)
+            print(f'[DEBUG TRAIN] loss_mask: shape={loss_mask.shape}, sum={loss_mask.sum()}, ratio={loss_mask.float().mean():.4f}', file=sys.stderr, flush=True)
         plosses, _, acces = eagle3_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             loss_mask=loss_mask,
             target=target,
             hidden_states=hidden_states,
-            position_ids=(
-                data["position_ids"].cuda() if "position_ids" in data else None
-            ),
             image_grid_thw=image_grid_thw,
             is_vlm=args.is_vlm,
         )
@@ -716,13 +681,56 @@ def record_metrcs(
     tracker.log(logdict, step=global_step)
 
 
-def get_dp_data_shard_from_tp(tensor: torch.Tensor) -> torch.Tensor:
+def get_dp_data_shard_from_tp(tensor: torch.Tensor, sp_dim: int = 1) -> torch.Tensor:
     """
-    Get the data shard from the tensor.
+    Process: TP split -> Pad to Max Len -> SP gather.
     """
-    tp_size = dist.get_world_size(get_tp_group())
-    tp_rank = dist.get_rank(get_tp_group())
-    return tensor.chunk(tp_size, dim=0)[tp_rank]
+    # 1. TP: Slice the tensor along the batch dimension
+    tp_group = get_tp_group()
+    tp_size = dist.get_world_size(tp_group)
+    tp_rank = dist.get_rank(tp_group)
+
+    local_tp_shard = tensor.chunk(tp_size, dim=0)[tp_rank]
+
+    # 2. SP: Handle dynamic sequence lengths and Gather
+    sp_group = get_draft_sp_group()
+
+    if sp_group is not None and dist.get_world_size(sp_group) > 1:
+        sp_world_size = dist.get_world_size(sp_group)
+        local_seq_len = local_tp_shard.size(sp_dim)
+
+        # Find global max sequence length in SP group
+        len_tensor = torch.tensor(
+            [local_seq_len], device=local_tp_shard.device, dtype=torch.long
+        )
+        dist.all_reduce(len_tensor, op=dist.ReduceOp.MAX, group=sp_group)
+        max_seq_len = len_tensor.item()
+
+        # Pad local tensor if necessary
+        # Shape is [Batch, Seq, Hidden] or [Batch, Seq], and sp_dim=1
+        if local_seq_len < max_seq_len:
+            pad_size = max_seq_len - local_seq_len
+
+            pad_config = [0] * (local_tp_shard.ndim * 2)
+
+            pad_idx = (local_tp_shard.ndim - 1 - sp_dim) * 2 + 1
+            pad_config[pad_idx] = pad_size
+
+            # Pad value: 0 is standard, ensure it matches your pad_token_id logic if needed
+            local_tp_shard_padded = nn.F.pad(local_tp_shard, pad_config, value=0)
+        else:
+            local_tp_shard_padded = local_tp_shard
+
+        gathered_shards = [
+            torch.empty_like(local_tp_shard_padded) for _ in range(sp_world_size)
+        ]
+        dist.all_gather(
+            gathered_shards, local_tp_shard_padded.contiguous(), group=sp_group
+        )
+
+        return torch.cat(gathered_shards, dim=sp_dim)
+
+    return local_tp_shard
 
 
 def main():
@@ -748,7 +756,7 @@ def main():
     # ================================================
     # 2. Build models
     # ================================================
-    draft_model_config, draft_model, ckpt_info, resume_state = build_draft_model(args)
+    draft_model_config, draft_model = build_draft_model(args)
     target_model, processor = build_target_model(args, draft_model_config, is_online)
 
     # ================================================
@@ -789,6 +797,7 @@ def main():
             processor=processor,
             length=args.ttt_length,
             attention_backend=args.attention_backend,
+            teacher_temperature=args.teacher_temperature,
         )
     else:
         if is_online:
@@ -797,6 +806,7 @@ def main():
                 draft_model=draft_model,
                 length=args.ttt_length,
                 attention_backend=args.attention_backend,
+                teacher_temperature=args.teacher_temperature,
             )
         else:
             # offline: the target_model is TargetHead not a model
@@ -804,6 +814,7 @@ def main():
                 draft_model=draft_model,
                 length=args.ttt_length,
                 attention_backend=args.attention_backend,
+                teacher_temperature=args.teacher_temperature,
             )
     eagle3_model = FSDP(
         eagle3_model,
@@ -829,28 +840,12 @@ def main():
     )
     print_with_rank("Initialized optimizer and scheduler")
 
-    # Restore optimizer/scheduler state for true resume
-    if resume_state is not None:
-        optimizer.load_state_dict(resume_state)
-        start_epoch = resume_state["epoch"]
-        global_step = resume_state["global_step"]
-        print_on_rank0(
-            f"Restored optimizer/scheduler state: "
-            f"epoch={start_epoch}, step={global_step}, "
-            f"lr={optimizer.get_learning_rate():.6f}"
-        )
-        del resume_state
-    else:
-        start_epoch = ckpt_info[0]
-        global_step = ckpt_info[1]
-
-    # Calculate how many steps to skip in the current epoch (for dataloader fast-forward)
-    skip_steps = global_step - start_epoch * len(train_dataloader)
-
     # ================================================
     # 6. Build tracker
     # ================================================
     tracker = build_tracker(args, parser)
+    global_step = 0
+    start_epoch = 0
     dist.barrier()
 
     last_time = time.time()
@@ -858,9 +853,7 @@ def main():
     # ================================================
     # 7. Start training
     # ================================================
-    print_on_rank0(
-        f"Starting training from epoch:{start_epoch}          step:{global_step}"
-    )
+    print_on_rank0(f"Starting training from epoch {start_epoch}")
 
     for epoch in range(start_epoch, args.num_epochs):
         # Run training
@@ -874,11 +867,7 @@ def main():
         else:
             progress_bar = train_dataloader
 
-        for step_in_epoch, data in enumerate(progress_bar):
-            # Skip steps already processed in the current epoch when resuming
-            if epoch == start_epoch and step_in_epoch < skip_steps:
-                continue
-
+        for data in progress_bar:
             global_step += 1
 
             # ================================================
@@ -910,11 +899,7 @@ def main():
             # 7.1 Training Step
             # ================================================
             plosses, acces = run_forward(
-                args,
-                eagle3_model,
-                data,
-                target_model,
-                is_online,
+                args, eagle3_model, data, target_model, is_online
             )
             run_backward_and_update(args, plosses, optimizer, global_step)
 
@@ -946,14 +931,9 @@ def main():
             # ================================================
             # 7.2 Evaluation Step
             # ================================================
-            should_evaluate = (
-                args.eval_data_path is not None
-                or args.eval_hidden_states_path is not None
-            )
             if (
-                should_evaluate
-                and global_step % (args.eval_interval * args.draft_accumulation_steps)
-                == 0
+                args.eval_data_path is not None
+                and global_step % args.eval_interval == 0
             ):
                 # Run evaluation
                 draft_model.eval()
@@ -980,7 +960,7 @@ def main():
                     args,
                     eval_acces,
                     eval_plosses,
-                    global_step // args.draft_accumulation_steps,
+                    global_step,
                     tracker,
                     mode="eval",
                 )
