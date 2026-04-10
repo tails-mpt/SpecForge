@@ -405,38 +405,29 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
         input_lens = [len(req.origin_input_ids) for req in reqs]
 
         if return_logits:
-            # Extract logits from various output formats
-            raw_logits = eagle3_output
-            for attr_path in ["logits_output.logits", "logits"]:
-                obj = eagle3_output
-                try:
-                    for part in attr_path.split("."):
-                        obj = getattr(obj, part)
-                    if isinstance(obj, torch.Tensor):
-                        raw_logits = obj
-                        break
-                except (AttributeError, TypeError):
-                    continue
-            if not isinstance(raw_logits, torch.Tensor) and isinstance(eagle3_output, tuple):
-                raw_logits = eagle3_output[0]
+            # Unwrap tuple if model returns (output_obj,)
+            output = eagle3_output[0] if isinstance(eagle3_output, tuple) else eagle3_output
+            # Extract .logits tensor from output object
+            if isinstance(output, torch.Tensor):
+                raw_logits = output
+            elif hasattr(output, "logits_output"):
+                raw_logits = output.logits_output.logits
+            elif hasattr(output, "logits"):
+                raw_logits = output.logits
+            else:
+                raw_logits = output
             logits = torch.split(raw_logits, input_lens, dim=0)
         else:
             logits = [None] * len(reqs)
 
         if capture_aux_hidden_states:
-            raw_aux_hidden_states = None
-            for attr_path in ["logits_output.aux_hidden_states", "aux_hidden_states"]:
-                obj = eagle3_output
-                try:
-                    for part in attr_path.split("."):
-                        obj = getattr(obj, part)
-                    if isinstance(obj, torch.Tensor):
-                        raw_aux_hidden_states = obj
-                        break
-                except (AttributeError, TypeError):
-                    continue
-            if raw_aux_hidden_states is None and isinstance(eagle3_output, tuple) and len(eagle3_output) > 1:
-                raw_aux_hidden_states = eagle3_output[1]
+            # Use same unwrapped output
+            if hasattr(output, "logits_output"):
+                raw_aux_hidden_states = output.logits_output.aux_hidden_states
+            elif hasattr(output, "aux_hidden_states"):
+                raw_aux_hidden_states = output.aux_hidden_states
+            else:
+                raw_aux_hidden_states = None
             # concat hidden shape: (total_tokens, H*3)
             aux_hidden_states_list = torch.split(
                 raw_aux_hidden_states, input_lens, dim=0
@@ -445,9 +436,13 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
             aux_hidden_states_list = [None] * len(reqs)
 
         if return_last_hidden_states:
-            last_hidden_states = torch.split(
-                eagle3_output.logits_output.last_hidden_states, input_lens, dim=0
-            )
+            if hasattr(output, "logits_output"):
+                raw_last = output.logits_output.last_hidden_states
+            elif hasattr(output, "last_hidden_states"):
+                raw_last = output.last_hidden_states
+            else:
+                raw_last = None
+            last_hidden_states = torch.split(raw_last, input_lens, dim=0) if raw_last is not None else [None] * len(reqs)
         else:
             last_hidden_states = [None] * len(reqs)
 
