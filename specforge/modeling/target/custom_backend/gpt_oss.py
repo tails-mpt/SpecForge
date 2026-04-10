@@ -39,7 +39,9 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 try:
     from transformers.utils.generic import check_model_inputs
 except ImportError:
-    def check_model_inputs(func): return func
+    # Removed in transformers >= 5.x; define a no-op decorator stub
+    def check_model_inputs(fn):
+        return fn
 
 from specforge.distributed import get_tp_group, shard_tensor
 from specforge.layers import (

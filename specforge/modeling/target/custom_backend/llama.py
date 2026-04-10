@@ -44,7 +44,8 @@ from transformers.utils import TransformersKwargs, logging
 try:
     from transformers.utils.generic import check_model_inputs
 except ImportError:
-    def check_model_inputs(func): return func
+    def check_model_inputs(fn):
+        return fn
 
 from specforge.distributed import get_tp_group
 from specforge.layers import (
