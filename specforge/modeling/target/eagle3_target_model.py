@@ -405,7 +405,10 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
         input_lens = [len(req.origin_input_ids) for req in reqs]
 
         if return_logits:
-            if hasattr(eagle3_output, "logits_output"):
+            from specforge.modeling.target.sglang_backend.utils import ReplacedLogitsProcessorEagle3Output
+            if isinstance(eagle3_output, ReplacedLogitsProcessorEagle3Output):
+                raw_logits = eagle3_output.logits
+            elif hasattr(eagle3_output, "logits_output"):
                 raw_logits = eagle3_output.logits_output.logits
             elif hasattr(eagle3_output, "logits"):
                 raw_logits = eagle3_output.logits
@@ -418,7 +421,9 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
             logits = [None] * len(reqs)
 
         if capture_aux_hidden_states:
-            if hasattr(eagle3_output, "logits_output"):
+            if isinstance(eagle3_output, ReplacedLogitsProcessorEagle3Output):
+                raw_aux_hidden_states = eagle3_output.aux_hidden_states
+            elif hasattr(eagle3_output, "logits_output"):
                 raw_aux_hidden_states = eagle3_output.logits_output.aux_hidden_states
             elif hasattr(eagle3_output, "aux_hidden_states"):
                 raw_aux_hidden_states = eagle3_output.aux_hidden_states
