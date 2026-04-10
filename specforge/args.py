@@ -210,7 +210,7 @@ class SGLangBackendArgs:
             enable_torch_compile=self.sglang_enable_torch_compile,
             enable_dp_attention=self.sglang_enable_dp_attention,
             enable_dp_lm_head=self.sglang_enable_dp_lm_head,
-            enable_piecewise_cuda_graph=self.sglang_enable_piecewise_cuda_graph,
+            disable_piecewise_cuda_graph=not self.sglang_enable_piecewise_cuda_graph,
             piecewise_cuda_graph_max_tokens=self.sglang_piecewise_cuda_graph_max_tokens,
             piecewise_cuda_graph_tokens=self.sglang_piecewise_cuda_graph_tokens,
             ep_size=self.sglang_ep_size,
