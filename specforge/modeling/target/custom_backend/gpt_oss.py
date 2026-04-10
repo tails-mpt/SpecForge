@@ -36,7 +36,10 @@ from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssRMSNorm
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
-from transformers.utils.generic import check_model_inputs
+try:
+    from transformers.utils.generic import check_model_inputs
+except ImportError:
+    def check_model_inputs(func): return func
 
 from specforge.distributed import get_tp_group, shard_tensor
 from specforge.layers import (

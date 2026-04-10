@@ -52,7 +52,10 @@ from transformers.utils import (
     logging,
 )
 from transformers.utils.deprecation import deprecate_kwarg
-from transformers.utils.generic import check_model_inputs
+try:
+    from transformers.utils.generic import check_model_inputs
+except ImportError:
+    def check_model_inputs(func): return func
 
 # [MODIFIED] Import from transformers library
 from specforge.distributed import get_tp_group, shard_tensor

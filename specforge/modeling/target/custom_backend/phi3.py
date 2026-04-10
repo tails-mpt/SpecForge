@@ -43,7 +43,10 @@ from transformers.models.phi3.modeling_phi3 import (
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
-from transformers.utils.generic import check_model_inputs
+try:
+    from transformers.utils.generic import check_model_inputs
+except ImportError:
+    def check_model_inputs(func): return func
 
 from specforge.distributed import get_tp_group
 from specforge.layers import (
