@@ -278,6 +278,33 @@ TEMPLATE_REGISTRY.register(
     ),
 )
 
+# DeepSeek-V4-Flash + V4-Pro chat template (added 2026-04-30 alongside the V4
+# Eagle3 fork extension). V4 has NO Jinja chat_template field in
+# tokenizer_config.json — uses Python encoding/encoding_dsv4.py instead. Per
+# the V4 encoding reference (/tmp/v4-flash-meta/encoding/encoding_dsv4.py +
+# README.md), the chat format is:
+#
+#   <｜begin▁of▁sentence｜>{system}
+#   <｜User｜>{user}<｜Assistant｜><think>{reasoning}</think>{response}<｜end▁of▁sentence｜>
+#
+# Same special tokens as V3 / V3.2 (`<｜User｜>`, `<｜Assistant｜>`, `<think>`,
+# `</think>`, `<｜end▁of▁sentence｜>`). Thinking mode supported (V4 ships three
+# reasoning effort modes: "non-think", "think-high", "think-max" — see V4
+# README "Instruct Model" section). For SpecForge training-data prep we
+# treat this as parser_type="thinking" / enable_thinking=True identical to
+# deepseek-v32.
+TEMPLATE_REGISTRY.register(
+    name="deepseek-v4",
+    template=ChatTemplate(
+        assistant_header="<｜Assistant｜>",
+        user_header="<｜User｜>",
+        system_prompt="",
+        end_of_turn_token="<｜end▁of▁sentence｜>",
+        parser_type="thinking",
+        enable_thinking=True,
+    ),
+)
+
 TEMPLATE_REGISTRY.register(
     name="longcat",
     template=ChatTemplate(
