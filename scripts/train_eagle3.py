@@ -379,7 +379,12 @@ def build_draft_model(args: Namespace) -> Tuple[AutoDraftModelConfig, nn.Module]
     # detecting last ckpt for draft model
     if args.resume and os.path.isdir(args.output_dir):
         print_on_rank0(args.output_dir)
-        draft_model_last_checkpoint = get_last_checkpoint(args.output_dir)
+        # get_last_checkpoint returns (path, (epoch, step)); we only need the path here
+        last_ckpt_result = get_last_checkpoint(args.output_dir)
+        if isinstance(last_ckpt_result, tuple):
+            draft_model_last_checkpoint = last_ckpt_result[0]
+        else:
+            draft_model_last_checkpoint = last_ckpt_result
         print_on_rank0(f"Last checkpoint detected: {draft_model_last_checkpoint}")
 
     if draft_model_last_checkpoint:
@@ -515,14 +520,22 @@ def save_checkpoints(
         os.makedirs(epoch_output_dir, exist_ok=True)
     dist.barrier()
 
+    # Per-rank optimizer state save: under FSDP + SHARD_GRAD_OP + use_orig_params=True,
+    # each rank's BF16Optimizer holds only its own 1/world_size shard of Adam moments
+    # (the optimizer wraps fp32 shadows of the locally-sharded params). Saving from rank 0
+    # only would lose 7/8 of the state. Instead, every rank saves its own slice; on resume
+    # each rank loads its own slice. The shared scheduler/epoch/global_step is saved once
+    # by rank 0 in training_state.pt.
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    rank_state = {"optimizer_state_dict": optimizer.optimizer.state_dict()}
+    torch.save(
+        rank_state,
+        os.path.join(epoch_output_dir, f"training_state_rank{rank}.pt"),
+    )
+
     with FSDP.state_dict_type(eagle3_model, StateDictType.FULL_STATE_DICT):
         model_state_dict = eagle3_model.state_dict()
-        state_to_save = {
-            "epoch": epoch,
-            "global_step": step,
-            "args": args,
-        }
-        state_to_save.update(optimizer.state_dict())
         draft_model_state_dict = {
             k.replace("draft_model.", ""): v
             for k, v in model_state_dict.items()
@@ -530,12 +543,20 @@ def save_checkpoints(
         }
 
         if dist.get_rank() == 0:
+            shared_state = {
+                "epoch": epoch,
+                "global_step": step,
+                "args": args,
+                "scheduler_state_dict": optimizer.scheduler.state_dict(),
+                "world_size": world_size,
+            }
             torch.save(
-                state_to_save,
+                shared_state,
                 os.path.join(epoch_output_dir, "training_state.pt"),
             )
             print_on_rank0(
-                f"Saved full training state to {epoch_output_dir}/training_state.pt"
+                f"Saved shared training state to {epoch_output_dir}/training_state.pt "
+                f"(per-rank optim state in training_state_rank{{0..{world_size - 1}}}.pt)"
             )
             eagle3_model.draft_model.save_pretrained(
                 epoch_output_dir,
@@ -841,11 +862,112 @@ def main():
     print_with_rank("Initialized optimizer and scheduler")
 
     # ================================================
-    # 6. Build tracker
+    # 6. Build tracker + resume state (if --resume)
     # ================================================
     tracker = build_tracker(args, parser)
     global_step = 0
     start_epoch = 0
+    skip_steps = 0
+    if args.resume and os.path.isdir(args.output_dir):
+        last_ckpt_result = get_last_checkpoint(args.output_dir)
+        resume_dir = (
+            last_ckpt_result[0]
+            if isinstance(last_ckpt_result, tuple) and last_ckpt_result[0]
+            else None
+        )
+        if resume_dir:
+            shared_path = os.path.join(resume_dir, "training_state.pt")
+            rank_path = os.path.join(
+                resume_dir, f"training_state_rank{dist.get_rank()}.pt"
+            )
+            if os.path.exists(shared_path):
+                shared_state = torch.load(
+                    shared_path, map_location="cpu", weights_only=False
+                )
+                # Always restore scheduler / epoch / global_step from shared file
+                if "scheduler_state_dict" in shared_state:
+                    optimizer.scheduler.load_state_dict(
+                        shared_state["scheduler_state_dict"]
+                    )
+                start_epoch = shared_state.get("epoch", 0)
+                global_step = shared_state.get("global_step", 0)
+                # Per-rank optimizer state — preferred path (new format).
+                # If world_size matches AND the rank file exists, restore Adam moments fully.
+                # Otherwise fall back through legacy single-file or just scheduler+epoch+step.
+                saved_world = shared_state.get("world_size")
+                cur_world = dist.get_world_size()
+                if (
+                    saved_world == cur_world
+                    and os.path.exists(rank_path)
+                ):
+                    rank_state = torch.load(
+                        rank_path, map_location="cpu", weights_only=False
+                    )
+                    optimizer.optimizer.load_state_dict(
+                        rank_state["optimizer_state_dict"]
+                    )
+                    if dist.get_rank() == 0:
+                        print(
+                            f"[RESUME] epoch={start_epoch}, step={global_step}, "
+                            f"lr={optimizer.get_learning_rate():.6e}, "
+                            f"per-rank Adam moments restored",
+                            flush=True,
+                        )
+                elif "optimizer_state_dict" in shared_state:
+                    # Legacy single-file format (pre per-rank): try the in-file optimizer state.
+                    # Under multi-rank FSDP this captures rank-0's slice only — partial restore.
+                    legacy_osd = shared_state["optimizer_state_dict"]
+                    if dist.get_rank() == 0:
+                        if legacy_osd.get("state"):
+                            optimizer.optimizer.load_state_dict(legacy_osd)
+                            print(
+                                "[RESUME] legacy single-file optimizer state "
+                                "restored (may be partial under multi-rank FSDP)",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                "[RESUME] WARNING: legacy training_state.pt has "
+                                "empty optimizer state; only scheduler+epoch+step "
+                                "restored, Adam moments fresh",
+                                flush=True,
+                            )
+                elif saved_world is not None and saved_world != cur_world:
+                    if dist.get_rank() == 0:
+                        print(
+                            f"[RESUME] WARNING: world_size mismatch "
+                            f"(saved={saved_world}, current={cur_world}); only "
+                            f"scheduler+epoch+step restored, Adam moments fresh",
+                            flush=True,
+                        )
+                else:
+                    if dist.get_rank() == 0:
+                        print(
+                            f"[RESUME] WARNING: rank {dist.get_rank()} optim "
+                            f"state missing at {rank_path}; only scheduler+"
+                            f"epoch+step restored, Adam moments fresh",
+                            flush=True,
+                        )
+                # Skip already-consumed batches in the partial epoch we resumed into.
+                # NOTE: this is only meaningful if the dataloader's shuffle order is
+                # deterministic given epoch, which it is via sampler.set_epoch(epoch+1).
+                if start_epoch < args.num_epochs:
+                    skip_steps = max(
+                        0, global_step - start_epoch * len(train_dataloader)
+                    )
+                    if skip_steps > 0 and dist.get_rank() == 0:
+                        print(
+                            f"[RESUME] will skip first {skip_steps} batches of "
+                            f"epoch {start_epoch} to resume mid-epoch",
+                            flush=True,
+                        )
+            else:
+                if dist.get_rank() == 0:
+                    print(
+                        f"[RESUME] WARNING: --resume given but {shared_path} "
+                        f"not found; starting fresh from model weights only",
+                        flush=True,
+                    )
     dist.barrier()
 
     last_time = time.time()
@@ -868,6 +990,10 @@ def main():
             progress_bar = train_dataloader
 
         for data in progress_bar:
+            # Skip already-consumed batches when resuming mid-epoch
+            if skip_steps > 0:
+                skip_steps -= 1
+                continue
             global_step += 1
 
             # ================================================
