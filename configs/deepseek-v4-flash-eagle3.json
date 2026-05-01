@@ -1,0 +1,33 @@
+{
+  "_comment_for_humans": "Eagle3 DRAFT model config for DeepSeek-V4-Flash. The draft is a 1-layer Llama (NOT DeepSeek-V4 architecture) — same convention as deepseek-v3-671b-eagle3.json and deepseek-v3.2-eagle3.json. Aux hidden state layer ids [1, 21, 41] are slot proposals for the V4-Flash 43-layer trunk; see experiments/DeepSeek-V4-Flash/architecture-notes.md 'Eagle3 aux capture layer slots' for the rationale (layer 1 = window-only, layer 21 = CSA mid-network, layer 41 = CSA late-network). hidden_size=4096 matches V4-Flash's dim. intermediate_size=16384 = 4 * hidden_size (standard Llama default). num_attention_heads=32 = V4's 64 / 2 (proportional reduction for the draft); num_key_value_heads=8 (GQA standard for Eagle3 drafts). max_position_embeddings=1048576 matches V4's 1M context. bos/eos/pad token ids match V4's tokenizer_config.json (0/1/1).",
+  "architectures": [
+    "LlamaForCausalLMEagle3"
+  ],
+  "eagle_config": {
+    "eagle_aux_hidden_state_layer_ids": [
+      1,
+      21,
+      41
+    ],
+    "use_aux_hidden_state": true
+  },
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "hidden_act": "silu",
+  "hidden_size": 4096,
+  "initializer_range": 0.02,
+  "intermediate_size": 16384,
+  "max_position_embeddings": 1048576,
+  "model_type": "llama",
+  "num_attention_heads": 32,
+  "num_key_value_heads": 8,
+  "num_hidden_layers": 1,
+  "pad_token_id": 1,
+  "rms_norm_eps": 1e-06,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.57.1",
+  "use_cache": true,
+  "vocab_size": 129280,
+  "draft_vocab_size": 32000
+}
