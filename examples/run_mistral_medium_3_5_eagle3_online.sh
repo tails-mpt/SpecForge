@@ -10,7 +10,7 @@
 #   hidden 12288, GQA 96:8, vocab 131072. Native FP8 published quant.
 # - Mistral-Medium-3.5's stock config.json publishes
 #   architectures: ["Mistral3ForConditionalGeneration"] (the multimodal wrapper).
-#   Override it to ["MistralLarge3ForCausalLM"] on disk before launching, so
+#   Override it to ["Ministral3ForCausalLM"] on disk before launching, so
 #   sglang routes the load to the text-only head and the Pixtral vision
 #   tower never instantiates. See architecture-notes.md §"Top-level config".
 # - SGLANG_ENABLE_JIT_DEEPGEMM=0 set as a precaution (FP8-MoE precedent on
