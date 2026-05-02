@@ -60,6 +60,7 @@ torchrun \
     --learning-rate 5e-5 \
     --max-length 4096 \
     --chat-template mistral-medium-3-5 \
+    --embedding-key model.language_model.embed_tokens.weight \
     --cache-dir "$CACHE_DIR" \
     --dist-timeout 60 \
     --sglang-mem-fraction-static 0.40
