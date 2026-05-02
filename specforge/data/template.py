@@ -338,3 +338,23 @@ TEMPLATE_REGISTRY.register(
         end_of_turn_token="<turn|>\n",
     ),
 )
+
+# Mistral-Medium-3.5 (and the broader Mistral3 / ministral3 family) uses
+# bracketed user turns: [INST]content[/INST]assistant_response</s>. Note the
+# closing [/INST] is the marker right before assistant content begins, so
+# assistant_header is set to it (not user_footer — the ChatTemplate dataclass
+# doesn't have a user_footer field, but the loss-mask regex in
+# preprocessing.py uses `end_of_turn_token + assistant_header` to locate
+# assistant spans, which gives us "</s>[/INST]" — close enough since the
+# first turn has no preceding </s>, and subsequent turns do).
+# system_prompt is left empty: Mistral's bundled chat_template.jinja
+# inserts [SYSTEM_PROMPT]...[/SYSTEM_PROMPT] natively.
+TEMPLATE_REGISTRY.register(
+    name="mistral-medium-3-5",
+    template=ChatTemplate(
+        assistant_header="[/INST]",
+        user_header="[INST]",
+        system_prompt="",
+        end_of_turn_token="</s>",
+    ),
+)
