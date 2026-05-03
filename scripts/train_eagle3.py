@@ -380,6 +380,11 @@ def build_draft_model(args: Namespace) -> Tuple[AutoDraftModelConfig, nn.Module]
     if args.resume and os.path.isdir(args.output_dir):
         print_on_rank0(args.output_dir)
         draft_model_last_checkpoint = get_last_checkpoint(args.output_dir)
+        # get_last_checkpoint may return a tuple (path, (epoch, step)) or a
+        # 3-tuple (path, epoch, step) depending on SpecForge version. Unpack
+        # to just the path string for from_pretrained.
+        if isinstance(draft_model_last_checkpoint, tuple):
+            draft_model_last_checkpoint = draft_model_last_checkpoint[0]
         print_on_rank0(f"Last checkpoint detected: {draft_model_last_checkpoint}")
 
     if draft_model_last_checkpoint:
