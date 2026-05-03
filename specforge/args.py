@@ -102,6 +102,16 @@ class SGLangBackendArgs:
     sglang_ep_size: int = 1
     sglang_max_running_requests: int = None  # assign based on batch size
     sglang_max_total_tokens: int = None  # assign based on batch size and seq length
+    # Crucible Squeeze (in-VM 2026-05-03): expose sglang's --fp8-gemm-backend and
+    # --moe-runner-backend so we can force triton on FP8 MoE targets where the
+    # auto path picks DeepGEMM and the JIT compile crashes (kernel_runtime.hpp:45
+    # exit_code == 0). SpecForge's training path goes through SGLangRunner (NOT
+    # the sglang Scheduler), so initialize_fp8_gemm_config never runs and the
+    # --fp8-gemm-backend flag at sglang.launch_server level is also bypassed.
+    # The fix is to forward these directly into ServerArgs(...) construction
+    # via to_kwargs() below.
+    sglang_fp8_gemm_backend: str = "auto"
+    sglang_moe_runner_backend: str = "auto"
 
     @staticmethod
     def add_args(parser: argparse.ArgumentParser) -> None:
@@ -174,6 +184,27 @@ class SGLangBackendArgs:
             default=1,
             help="The ep size of the SGLang backend",
         )
+        parser.add_argument(
+            "--sglang-fp8-gemm-backend",
+            type=str,
+            default="auto",
+            help=(
+                "Forwarded to sglang's ServerArgs.fp8_gemm_runner_backend (the "
+                "--fp8-gemm-backend flag on sglang.launch_server). "
+                "'auto' lets sglang pick (DeepGEMM on H100 sm90 — which JIT-crashes "
+                "on some venvs); pass 'triton' to force the triton path which is "
+                "more robust at the cost of ~10-20%% kernel time."
+            ),
+        )
+        parser.add_argument(
+            "--sglang-moe-runner-backend",
+            type=str,
+            default="auto",
+            help=(
+                "Forwarded to sglang's ServerArgs.moe_runner_backend. Same intent "
+                "as --sglang-fp8-gemm-backend but for the MoE expert-forward path."
+            ),
+        )
 
     @staticmethod
     def from_args(args: argparse.Namespace) -> "SGLangBackendArgs":
@@ -198,6 +229,8 @@ class SGLangBackendArgs:
                 if hasattr(args, "target_batch_size") and hasattr(args, "max_length")
                 else None
             ),
+            sglang_fp8_gemm_backend=getattr(args, "sglang_fp8_gemm_backend", "auto"),
+            sglang_moe_runner_backend=getattr(args, "sglang_moe_runner_backend", "auto"),
         )
 
     def to_kwargs(self) -> Dict[str, Any]:
@@ -216,4 +249,8 @@ class SGLangBackendArgs:
             ep_size=self.sglang_ep_size,
             max_running_requests=self.sglang_max_running_requests,
             max_total_tokens=self.sglang_max_total_tokens,
+            # See class docstring above: forwarded to sglang's ServerArgs as
+            # `fp8_gemm_runner_backend` / `moe_runner_backend`.
+            fp8_gemm_runner_backend=self.sglang_fp8_gemm_backend,
+            moe_runner_backend=self.sglang_moe_runner_backend,
         )
