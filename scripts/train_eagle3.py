@@ -154,6 +154,28 @@ def parse_args() -> Tuple[ArgumentParser, Namespace]:
         default=1.0,
         help="Temperature for softening target distribution during training (>1 = softer). Default 1.0 = no change.",
     )
+    training_group.add_argument(
+        "--hass",
+        action="store_true",
+        help=(
+            "Enable HASS recipe (Zhang et al. 2024, arXiv:2408.15766) for "
+            "harmonized representations. Replaces full-vocab cross-entropy with "
+            "Top-K distillation (default K=10, w=1.0). Recommended ttt_length=3 "
+            "with --hass (vs vanilla 5-7). Crucible Squeeze A1.4."
+        ),
+    )
+    training_group.add_argument(
+        "--hass-top-k",
+        type=int,
+        default=10,
+        help="K in HASS Top-K distillation loss. Paper default 10.",
+    )
+    training_group.add_argument(
+        "--hass-loss-weight",
+        type=float,
+        default=1.0,
+        help="Weight w on the Top-K loss in HASS. Paper default 1.0.",
+    )
     training_group.add_argument("--resume", action="store_true")
     training_group.add_argument(
         "--ckpt-dir",
@@ -807,6 +829,9 @@ def main():
                 length=args.ttt_length,
                 attention_backend=args.attention_backend,
                 teacher_temperature=args.teacher_temperature,
+                hass_enabled=getattr(args, "hass", False),
+                hass_top_k=getattr(args, "hass_top_k", 10),
+                hass_loss_weight=getattr(args, "hass_loss_weight", 1.0),
             )
         else:
             # offline: the target_model is TargetHead not a model
@@ -815,6 +840,9 @@ def main():
                 length=args.ttt_length,
                 attention_backend=args.attention_backend,
                 teacher_temperature=args.teacher_temperature,
+                hass_enabled=getattr(args, "hass", False),
+                hass_top_k=getattr(args, "hass_top_k", 10),
+                hass_loss_weight=getattr(args, "hass_loss_weight", 1.0),
             )
     eagle3_model = FSDP(
         eagle3_model,
