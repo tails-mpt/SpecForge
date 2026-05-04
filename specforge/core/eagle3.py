@@ -266,6 +266,16 @@ class OnlineEagle3Model(Eagle3Model):
             raise ValueError(f"Unknown attention backend: {self.attention_backend}")
 
         for idx in range(self.length):
+            if self.hass_enabled and idx > 0 and self.attention_backend in ["sdpa", "fa", "usp"]:
+                # HASS harmonized context (paper §3.1 Fig. 3): each position i at TTT
+                # step k sees only position i-1's output from step k-1. Vanilla Eagle3
+                # cache_hidden accumulates global K/V across all prior steps; HASS resets
+                # it per step and shifts hidden_states right by 1 to create local context.
+                cache_hidden = [[], []]
+                shifted = torch.zeros_like(hidden_states)
+                shifted[:, 1:, :] = hidden_states[:, :-1, :]
+                hidden_states = shifted
+
             state = adapter.step_view(
                 idx=idx,
                 ttt_length=self.length,
