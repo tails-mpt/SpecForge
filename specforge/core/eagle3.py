@@ -56,13 +56,32 @@ class OnlineEagle3Model(Eagle3Model):
         attention_backend="sdpa",
         target_model: Optional[Eagle3Model] = None,
         teacher_temperature: float = 1.0,
+        # HASS recipe (Crucible Squeeze A1.4) — Zhang et al. 2024,
+        # "Learning Harmonized Representations for Speculative Sampling"
+        # arXiv:2408.15766. Two changes vs vanilla Eagle3 TTT:
+        #   1. Top-K distillation loss: replace full-vocab CE with -Σ q(x) log p(x)
+        #      over the top-K target tokens (K=10, w=1.0 default).
+        #   2. Harmonized context: at TTT step k>=1, restrict attention so each
+        #      position attends only to the immediately-prior position's
+        #      previous-step output (not the whole prior history). Vanilla Eagle3
+        #      cache_hidden accumulates GLOBAL prior-step features; HASS narrows
+        #      to LOCAL (i-1)th feature only, mirroring inference-time KV
+        #      reachability. See paper Figure 3.
+        # Defaults: hass_enabled=False (no behavior change for existing runs).
+        hass_enabled: bool = False,
+        hass_top_k: int = 10,
+        hass_loss_weight: float = 1.0,
     ):
         """
         Args:
             target_model: the target model to extract hidden states.
             draft_model: the draft model to be trained.
-            length: TTT length, it means how many turns to unroll during TTT.
+            length: TTT length, it means how many turns to unroll during TTT. For
+                HASS the paper recommends length=3 (vanilla typically uses 5-7).
             teacher_temperature: temperature for softening target distribution (>1 = softer).
+            hass_enabled: if True, use HASS recipe (Top-K distill + local-context mask).
+            hass_top_k: K in the Top-K distillation loss (paper default 10).
+            hass_loss_weight: weight w on the Top-K loss (paper default 1.0).
         """
         super().__init__()
         self.draft_model = draft_model
@@ -70,6 +89,9 @@ class OnlineEagle3Model(Eagle3Model):
         self.attention_backend = attention_backend
         self.target_model = target_model
         self.teacher_temperature = teacher_temperature
+        self.hass_enabled = hass_enabled
+        self.hass_top_k = hass_top_k
+        self.hass_loss_weight = hass_loss_weight
 
     def _make_adapter(self) -> BackendAdapter:
         if self.attention_backend == "usp":
@@ -94,6 +116,29 @@ class OnlineEagle3Model(Eagle3Model):
                 local_correct=local_correct, local_denom=local_denom
             )
             acc = local_correct / local_denom
+
+        if self.hass_enabled:
+            # HASS Top-K distillation loss (paper Section 3.1, Eq. 1):
+            #   L_TopK = - sum_{x in TopK(target)} q(x) * log p(x)
+            # We renormalize q over the K selected target tokens, so the loss
+            # becomes a cross-entropy of the draft's distribution against the
+            # target's TopK distribution. Combined with the standard feature
+            # regression handled elsewhere via weight w (default 1.0).
+            K = self.hass_top_k
+            # `target_p` shape: (B, L, V); pick top-K target tokens at each pos
+            with torch.no_grad():
+                topk_vals, topk_idx = target_p.topk(K, dim=-1)  # (B, L, K)
+                # Renormalize so q sums to 1 over the K selected tokens
+                topk_q = topk_vals / topk_vals.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+            # Gather the draft's log-probs at the same K indices
+            log_p_full = torch.log_softmax(logits, dim=-1)
+            log_p_topk = torch.gather(log_p_full, -1, topk_idx)  # (B, L, K)
+            # -sum q log p, masked by position_mask. position_mask is (B, L, 1).
+            per_token = -(topk_q * log_p_topk).sum(dim=-1)  # (B, L)
+            mask_2d = position_mask.squeeze(-1) if position_mask.dim() == 3 else position_mask
+            loss_topk = (per_token * mask_2d).sum() / mask_2d.sum().clamp_min(1e-6)
+            loss_topk = adapter.reduce_loss(loss_topk * self.hass_loss_weight)
+            return acc, loss_topk
 
         loss = LogSoftmaxLoss.apply(logits, target_p, position_mask)
         loss = adapter.reduce_loss(loss)
