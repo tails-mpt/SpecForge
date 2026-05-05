@@ -131,6 +131,20 @@ def parse_arguments():
         nargs="+",
         help="Server address and port for sglang model server",
     )
+
+    # validation
+    validation_group = parser.add_argument_group("validation")
+    validation_group.add_argument(
+        "--regen-validation",
+        action="store_true",
+        help="After generation, print truncation rate and length distribution. "
+             "Warns if truncation rate (finish_reason=='length') exceeds 20%%.",
+    )
+    validation_group.add_argument(
+        "--regen-validation-strict",
+        action="store_true",
+        help="Like --regen-validation but hard-fails (exit 1) if truncation rate > 20%%.",
+    )
     return parser.parse_args()
 
 
@@ -227,16 +241,22 @@ def call_sglang(
                 data["status"] = "error"
                 data["error"] = str(e)
                 return data
-            response_text = resp.choices[0].message.content
+            choice = resp.choices[0]
+            response_text = choice.message.content
+            finish_reason = choice.finish_reason
+            completion_tokens = resp.usage.completion_tokens if resp.usage else None
             resp_msg = {
                 "role": "assistant",
                 "content": response_text,
+                "finish_reason": finish_reason,
+                "completion_tokens": completion_tokens,
             }
             if args.is_reasoning_model:
-                resp_msg["reasoning_content"] = resp.choices[
-                    0
-                ].message.reasoning_content
+                resp_msg["reasoning_content"] = choice.message.reasoning_content
             regenerated_messages.append(resp_msg)
+            # store last turn's finish_reason at record level for easy filtering
+            data["finish_reason"] = finish_reason
+            data["completion_tokens"] = completion_tokens
         else:
             data["status"] = "error"
             data["error"] = f"Invalid message role: {message['role']}"
@@ -326,6 +346,8 @@ def main():
     context_token_max = 0
     success_samples = 0
     error_samples = 0
+    finish_reason_counts: dict[str, int] = {}
+    completion_token_lengths: list[int] = []
 
     # Create progress bar
     with (
@@ -389,6 +411,11 @@ def main():
                                 json.dumps(regen_data, ensure_ascii=False) + "\n"
                             )
                             success_samples += 1
+                            fr = regen_data.get("finish_reason")
+                            finish_reason_counts[fr] = finish_reason_counts.get(fr, 0) + 1
+                            ct = regen_data.get("completion_tokens")
+                            if ct is not None:
+                                completion_token_lengths.append(ct)
                         waiting_queue[server_address].remove(req_future)
                         finished_on_request = True
 
@@ -452,6 +479,47 @@ def main():
         print(
             f"\nProcessing completed! {success_samples} samples regenerated, {error_samples} samples failed."
         )
+
+    if args.regen_validation or args.regen_validation_strict:
+        print("\n" + "=" * 60)
+        print("REGEN VALIDATION SUMMARY")
+        print("=" * 60)
+        total_success = success_samples
+        truncated = finish_reason_counts.get("length", 0)
+        natural_eos = finish_reason_counts.get("stop", 0)
+        other = {k: v for k, v in finish_reason_counts.items() if k not in ("length", "stop")}
+        truncation_rate = truncated / total_success if total_success > 0 else 0.0
+
+        print(f"Total successful samples : {total_success}")
+        print(f"  finish_reason=stop     : {natural_eos} ({100*natural_eos/total_success:.1f}%)" if total_success else "")
+        print(f"  finish_reason=length   : {truncated} ({100*truncation_rate:.1f}%) ← TRUNCATED")
+        for k, v in other.items():
+            print(f"  finish_reason={k!r:<8}: {v} ({100*v/total_success:.1f}%)")
+
+        if completion_token_lengths:
+            tl = sorted(completion_token_lengths)
+            n = len(tl)
+            pcts = {p: tl[int(n * p / 100)] for p in [10, 25, 50, 75, 90, 95, 99]}
+            print(f"\nCompletion token length distribution (n={n}):")
+            for p, v in pcts.items():
+                print(f"  p{p:>2}: {v} tokens")
+            print(f"  max: {tl[-1]} tokens")
+            print(f"  (--max-tokens was {args.max_tokens})")
+            at_cap = sum(1 for t in tl if t >= args.max_tokens - 5)
+            print(f"  within 5 tokens of cap: {at_cap} ({100*at_cap/n:.1f}%)")
+
+        print("=" * 60)
+
+        if truncation_rate > 0.20:
+            msg = (
+                f"WARNING: truncation rate {100*truncation_rate:.1f}% > 20%% threshold. "
+                f"Increase --max-tokens (currently {args.max_tokens}) or reduce prompt length."
+            )
+            print(f"\n⚠  {msg}")
+            if args.regen_validation_strict:
+                raise SystemExit(f"ERROR (--regen-validation-strict): {msg}")
+        else:
+            print(f"\n✓  Truncation rate {100*truncation_rate:.1f}% is within acceptable threshold (<20%).")
 
 
 if __name__ == "__main__":
