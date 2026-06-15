@@ -100,6 +100,7 @@ class SGLangBackendArgs:
     sglang_piecewise_cuda_graph_max_tokens: int = 4096
     sglang_piecewise_cuda_graph_tokens: List[int] = None
     sglang_ep_size: int = 1
+    sglang_moe_runner_backend: str = "auto"
     sglang_max_running_requests: int = None  # assign based on batch size
     sglang_max_total_tokens: int = None  # assign based on batch size and seq length
 
@@ -174,6 +175,14 @@ class SGLangBackendArgs:
             default=1,
             help="The ep size of the SGLang backend",
         )
+        parser.add_argument(
+            "--sglang-moe-runner-backend",
+            type=str,
+            default="auto",
+            help="MoE runner backend for the SGLang target. DeepSeek-V4-Flash's MXFP4 "
+            "experts require 'flashinfer_mxfp4' (the default 'auto' picks a runner that "
+            "asserts a hidden-size mismatch on V4).",
+        )
 
     @staticmethod
     def from_args(args: argparse.Namespace) -> "SGLangBackendArgs":
@@ -190,6 +199,7 @@ class SGLangBackendArgs:
             sglang_piecewise_cuda_graph_max_tokens=args.sglang_piecewise_cuda_graph_max_tokens,
             sglang_piecewise_cuda_graph_tokens=args.sglang_piecewise_cuda_graph_tokens,
             sglang_ep_size=args.sglang_ep_size,
+            sglang_moe_runner_backend=args.sglang_moe_runner_backend,
             sglang_max_running_requests=(
                 args.target_batch_size if hasattr(args, "target_batch_size") else None
             ),
@@ -214,6 +224,7 @@ class SGLangBackendArgs:
             piecewise_cuda_graph_max_tokens=self.sglang_piecewise_cuda_graph_max_tokens,
             piecewise_cuda_graph_tokens=self.sglang_piecewise_cuda_graph_tokens,
             ep_size=self.sglang_ep_size,
+            moe_runner_backend=self.sglang_moe_runner_backend,
             max_running_requests=self.sglang_max_running_requests,
             max_total_tokens=self.sglang_max_total_tokens,
         )
