@@ -404,8 +404,11 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
         )
         batch.prepare_for_extend()
         self._maybe_prepare_mlp_sync_batch(batch)
-        model_worker_batch = batch.get_model_worker_batch()
-        forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
+        # sglang 0.5.13: ForwardBatch.init_new takes the ScheduleBatch directly
+        # (ScheduleBatch.get_model_worker_batch was removed); capture_hidden_mode is read
+        # off the batch, so set it before init_new.
+        batch.capture_hidden_mode = CaptureHiddenMode.FULL
+        forward_batch = ForwardBatch.init_new(batch, self.model_runner)
         forward_batch.capture_hidden_mode = CaptureHiddenMode.FULL
         eagle3_output = self.model_runner.forward(forward_batch)
         aux_hidden_states_list = None
