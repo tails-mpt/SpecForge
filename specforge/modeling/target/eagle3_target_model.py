@@ -511,6 +511,10 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
             # fill_ids, prefix_indices and extend_input_len are set consistently
             # (prepare_for_extend asserts seq_len - pre_len == extend_input_len).
             req.init_next_round_input()
+            # sglang 0.5.13: fill_len is normally set by the scheduler's prefill adder
+            # before prepare_for_extend (which asserts fill_len - prefix == extend_input_len);
+            # we bypass the scheduler, so set it to the full prompt length here.
+            req.fill_len = len(req.full_untruncated_fill_ids)
             req.logprob_start_len = len(req.origin_input_ids) - 1
             data_cache.append([input_id_, attention_mask_, loss_mask_])
             reqs.append(req)
@@ -705,6 +709,10 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
             # fill_ids, prefix_indices and extend_input_len are set consistently
             # (prepare_for_extend asserts seq_len - pre_len == extend_input_len).
             req.init_next_round_input()
+            # sglang 0.5.13: fill_len is normally set by the scheduler's prefill adder
+            # before prepare_for_extend (which asserts fill_len - prefix == extend_input_len);
+            # we bypass the scheduler, so set it to the full prompt length here.
+            req.fill_len = len(req.full_untruncated_fill_ids)
             req.logprob_start_len = len(req.origin_input_ids) - 1
             req.multimodal_inputs = mm_inputs
             data_cache.append([input_id_, attention_mask_, loss_mask_])
