@@ -379,7 +379,7 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
             page_size=self.model_runner.server_args.page_size,
         )
         # Use SWARadixCache for models with hybrid sliding window attention (e.g., Gemma-4)
-        from sglang.srt.mem_cache.allocator import SWATokenToKVPoolAllocator
+        from sglang.srt.mem_cache.allocator.swa import SWATokenToKVPoolAllocator
         if isinstance(self.model_runner.token_to_kv_pool_allocator, SWATokenToKVPoolAllocator):
             from sglang.srt.mem_cache.swa_radix_cache import SWARadixCache
             swa_size = getattr(self.model_runner.model_config.hf_text_config, 'sliding_window', 1024)
