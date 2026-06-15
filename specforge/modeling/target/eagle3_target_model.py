@@ -383,7 +383,9 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
         if isinstance(self.model_runner.token_to_kv_pool_allocator, SWATokenToKVPoolAllocator):
             from sglang.srt.mem_cache.swa_radix_cache import SWARadixCache
             swa_size = getattr(self.model_runner.model_config.hf_text_config, 'sliding_window', 1024)
-            tree_cache = SWARadixCache(cache_params, sliding_window_size=swa_size)
+            # sglang 0.5.13: sliding_window_size moved from a SWARadixCache kwarg into CacheInitParams.
+            cache_params.sliding_window_size = swa_size
+            tree_cache = SWARadixCache(cache_params)
         else:
             tree_cache = RadixCache(cache_params)
 
