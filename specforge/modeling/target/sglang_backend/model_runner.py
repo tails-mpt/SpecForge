@@ -48,6 +48,15 @@ class SGLangRunner(ModelRunner):
     def init_torch_distributed(self):
         logger.info("Init torch distributed begin.")
 
+        # sglang 0.5.13: the MoE runner/a2a backends are set by a module-level global
+        # via initialize_moe_config(server_args), which is normally called by the
+        # Scheduler (scheduler.py). SpecForge drives ModelRunner directly (no Scheduler),
+        # so we must call it here — otherwise MOE_RUNNER_BACKEND stays at its default
+        # (triton) and DeepSeek-V4-Flash's MXFP4 experts assert "Hidden size mismatch".
+        from sglang.srt.layers.moe.utils import initialize_moe_config
+
+        initialize_moe_config(self.server_args)
+
         try:
             torch.get_device_module(self.device).set_device(self.gpu_id)
         except Exception:
