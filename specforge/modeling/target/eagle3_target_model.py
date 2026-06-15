@@ -404,6 +404,13 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
         )
         batch.prepare_for_extend()
         self._maybe_prepare_mlp_sync_batch(batch)
+        # sglang 0.5.13: materialize input_ids (H2D copy from the prefill CPU staging).
+        # The scheduler normally calls this before the forward; we bypass the scheduler.
+        # future_map is only used on the decode/spec path (mix_running_indices set), so
+        # for pure prefill we can pass None.
+        from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+
+        resolve_forward_inputs(batch, None)
         # sglang 0.5.13: ForwardBatch.init_new takes the ScheduleBatch directly
         # (ScheduleBatch.get_model_worker_batch was removed); capture_hidden_mode is read
         # off the batch, so set it before init_new.
