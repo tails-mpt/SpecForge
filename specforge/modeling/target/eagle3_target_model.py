@@ -21,7 +21,8 @@ from sglang.srt.managers.schedule_batch import (
 )
 
 # - prepare_mlp_sync_batch_raw is now a module-level function, not a Scheduler method
-from sglang.srt.managers.scheduler_dp_attn_mixin import prepare_mlp_sync_batch_raw
+# sglang 0.5.13: moved from scheduler_dp_attn_mixin -> scheduler_components.dp_attn
+from sglang.srt.managers.scheduler_components.dp_attn import prepare_mlp_sync_batch_raw
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardBatch
