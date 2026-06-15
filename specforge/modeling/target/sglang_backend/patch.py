@@ -335,54 +335,13 @@ def initialize_dp_attention(
     """
     Initialize data parallel attention.
 
-    Updated for sglang 0.5.9:
-    - Added attn_cp_size parameter support
-    - Removed _ATTN_TP_GROUP creation (now handled by initialize_model_parallel in sglang 0.5.9)
+    sglang 0.5.13: delegate to the upstream implementation. The previous 0.5.9 replica
+    drifted — `compute_dp_attention_world_info` now returns 4 values (not 3), and the
+    `_ATTN_TP_*` globals are set in `initialize_model_parallel`. Upstream's
+    `initialize_dp_attention(server_args, model_config)` has the identical signature and
+    sets the same globals + `_DpGatheredBufferWrapper` metadata, so we call it directly
+    instead of maintaining a copy that breaks across sglang versions.
     """
     import sglang.srt.layers.dp_attention as dp_attention
 
-    enable_dp_attention = server_args.enable_dp_attention
-    tp_size = server_args.tp_size
-    dp_size = server_args.dp_size
-    moe_dense_tp_size = server_args.moe_dense_tp_size
-    pp_size = server_args.pp_size
-    # NOTE: attn_cp_size is new in sglang 0.5.9
-    attn_cp_size = getattr(server_args, "attn_cp_size", 1)
-
-    tp_rank = parallel_state.get_tensor_model_parallel_rank()
-
-    dp_attention._ENABLE_DP_ATTENTION_FLAG = enable_dp_attention
-
-    # NOTE: Added attn_cp_size parameter for sglang 0.5.9
-    (
-        dp_attention._ATTN_TP_RANK,
-        dp_attention._ATTN_TP_SIZE,
-        dp_attention._ATTN_DP_RANK,
-    ) = compute_dp_attention_world_info(
-        enable_dp_attention, tp_rank, tp_size, dp_size, attn_cp_size
-    )
-    _, _, dp_attention._LOCAL_ATTN_DP_RANK = compute_dp_attention_local_info(
-        enable_dp_attention, tp_rank, tp_size, dp_size, moe_dense_tp_size
-    )
-
-    if enable_dp_attention:
-        dp_attention._ATTN_DP_SIZE = dp_size
-        if moe_dense_tp_size is None:
-            dp_attention._LOCAL_ATTN_DP_SIZE = dp_attention._ATTN_DP_SIZE
-        else:
-            dp_attention._LOCAL_ATTN_DP_SIZE = max(
-                1, dp_size // (tp_size // moe_dense_tp_size)
-            )
-    else:
-        dp_attention._ATTN_DP_SIZE = 1
-        dp_attention._LOCAL_ATTN_DP_SIZE = 1
-
-    # NOTE: In sglang 0.5.9, _ATTN_TP_GROUP is created in initialize_model_parallel.
-    # We no longer need to manually create it here to avoid conflicts.
-    # The assertion error occurs because we were trying to recreate an already-initialized group.
-
-    _DpGatheredBufferWrapper.set_metadata(
-        hidden_size=model_config.hidden_size,
-        dtype=model_config.dtype,
-        device=torch.device(server_args.device),
-    )
+    dp_attention.initialize_dp_attention(server_args, model_config)
