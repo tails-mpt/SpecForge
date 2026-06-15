@@ -503,8 +503,10 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
                 origin_input_ids=input_id_.view(-1).tolist(),
                 sampling_params=sampling_params,
             )
-            req.fill_ids = req.origin_input_ids
-            req.extend_input_len = len(req.fill_ids) - len(req.prefix_indices)
+            # sglang 0.5.13: use the Req lifecycle method so full_untruncated_fill_ids,
+            # fill_ids, prefix_indices and extend_input_len are set consistently
+            # (prepare_for_extend asserts seq_len - pre_len == extend_input_len).
+            req.init_next_round_input()
             req.logprob_start_len = len(req.origin_input_ids) - 1
             data_cache.append([input_id_, attention_mask_, loss_mask_])
             reqs.append(req)
@@ -695,8 +697,10 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
                 origin_input_ids=input_id_list,
                 sampling_params=sampling_params,
             )
-            req.fill_ids = req.origin_input_ids
-            req.extend_input_len = len(req.fill_ids) - len(req.prefix_indices)
+            # sglang 0.5.13: use the Req lifecycle method so full_untruncated_fill_ids,
+            # fill_ids, prefix_indices and extend_input_len are set consistently
+            # (prepare_for_extend asserts seq_len - pre_len == extend_input_len).
+            req.init_next_round_input()
             req.logprob_start_len = len(req.origin_input_ids) - 1
             req.multimodal_inputs = mm_inputs
             data_cache.append([input_id_, attention_mask_, loss_mask_])
