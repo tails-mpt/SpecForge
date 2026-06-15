@@ -23,6 +23,10 @@ from sglang.srt.managers.schedule_batch import (
 # - prepare_mlp_sync_batch_raw is now a module-level function, not a Scheduler method
 # sglang 0.5.13: moved from scheduler_dp_attn_mixin -> scheduler_components.dp_attn
 from sglang.srt.managers.scheduler_components.dp_attn import prepare_mlp_sync_batch_raw
+
+# sglang 0.5.13 Req stores token ids as array("q"); origin_input_ids must match so
+# init_next_round_input's `origin_input_ids + output_ids` concatenation works.
+from array import array as _arr
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardBatch
@@ -500,7 +504,7 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
             req = Req(
                 rid=str(idx),
                 origin_input_text="",
-                origin_input_ids=input_id_.view(-1).tolist(),
+                origin_input_ids=_arr("q", input_id_.view(-1).tolist()),
                 sampling_params=sampling_params,
             )
             # sglang 0.5.13: use the Req lifecycle method so full_untruncated_fill_ids,
@@ -694,7 +698,7 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
             req = Req(
                 rid=str(idx),
                 origin_input_text="",
-                origin_input_ids=input_id_list,
+                origin_input_ids=_arr("q", input_id_list),
                 sampling_params=sampling_params,
             )
             # sglang 0.5.13: use the Req lifecycle method so full_untruncated_fill_ids,
