@@ -127,6 +127,20 @@ TEMPLATE_REGISTRY.register(
     ),
 )
 
+# NVIDIA Nemotron-3-Nano (nemotron_h, hybrid Mamba-2/MoE). ChatML-style with a <think></think>
+# block auto-injected after the assistant header (model forces a reasoning block); baking it into
+# assistant_header keeps SpecForge's rendered training sequence faithful to the model's own template
+# so target hidden states are computed on the correct token stream. Default system content is empty.
+TEMPLATE_REGISTRY.register(
+    name="nemotron-h",
+    template=ChatTemplate(
+        assistant_header="<|im_start|>assistant\n<think></think>",
+        user_header="<|im_start|>user\n",
+        system_prompt="",
+        end_of_turn_token="<|im_end|>\n",
+    ),
+)
+
 TEMPLATE_REGISTRY.register(
     name="phi3",
     template=ChatTemplate(
