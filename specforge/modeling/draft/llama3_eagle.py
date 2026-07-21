@@ -1348,14 +1348,21 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
         )
         self.midlayer = LlamaDecoderLayer(config, attention_backend=attention_backend)
 
-        if hasattr(config, "target_hidden_size"):
-            self.fc = torch.nn.Linear(
-                config.target_hidden_size * 3, config.hidden_size, bias=False
-            )
-        else:
-            self.fc = torch.nn.Linear(
-                config.hidden_size * 3, config.hidden_size, bias=False
-            )
+        # Crucible nemotron-finalhidden-aux: optionally fuse the target's FINAL
+        # post-norm hidden state (norm_f output == lm_head input) as a 4th input
+        # alongside the 3 residual aux layers. Controlled by the draft config's
+        # eagle_config.use_final_hidden_state; default False -> standard 3-layer
+        # fc, unchanged for every other model.
+        eagle_cfg = getattr(config, "eagle_config", None) or {}
+        self.use_final_hidden_state = bool(
+            eagle_cfg.get("use_final_hidden_state", False)
+        )
+        self.num_aux_hidden_states = 4 if self.use_final_hidden_state else 3
+
+        _fc_base = getattr(config, "target_hidden_size", config.hidden_size)
+        self.fc = torch.nn.Linear(
+            _fc_base * self.num_aux_hidden_states, config.hidden_size, bias=False
+        )
 
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.lm_head = nn.Linear(
@@ -1428,8 +1435,12 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
         return self.embed_tokens(input_ids)
 
     def project_hidden_states(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        # eagle 3 requires hidden states from 3 layers
-        assert hidden_states.size(-1) == self.config.hidden_size * 3
+        # eagle 3 fuses 3 residual aux layers (or 4 when use_final_hidden_state
+        # is enabled -> 3 residual layers + final post-norm hidden state).
+        assert hidden_states.size(-1) == self.fc.in_features, (
+            f"expected fused hidden dim {self.fc.in_features}, "
+            f"got {hidden_states.size(-1)}"
+        )
         return self.fc(hidden_states)
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:

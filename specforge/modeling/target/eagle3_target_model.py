@@ -59,6 +59,12 @@ class Eagle3TargetModel(ABC):
 
     def __init__(self):
         self.aux_hidden_states_layers = None
+        # Crucible nemotron-finalhidden-aux: when True, the target's FINAL
+        # post-norm hidden state (norm_f output == lm_head input, what native
+        # MTP consumes) is captured and appended as a 4th fused input to the
+        # draft's fc, in addition to the 3 residual aux layers. Default False
+        # keeps standard 3-layer Eagle3 behavior for every other model.
+        self.use_final_hidden_state = False
 
     @classmethod
     @abstractmethod
@@ -738,13 +744,17 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
                 - pixel_values: (patch_len, patch_width)
                 - image_grid_thw (batch_size, 3)
         """
+        # Crucible nemotron-finalhidden-aux: capture the target's final
+        # post-norm hidden state (lm_head input) so it can be fused as a 4th
+        # draft input. Off by default -> standard 3-layer Eagle3.
+        use_final_hidden_state = getattr(self, "use_final_hidden_state", False)
         if is_vlm:
             data_cache, logits_list, aux_hidden_states_list, last_hidden_states_list = (
                 self.extend_vlm(
                     input_ids,
                     attention_mask,
                     loss_mask,
-                    return_last_hidden_states=False,
+                    return_last_hidden_states=use_final_hidden_state,
                     return_logits=True,
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
@@ -756,7 +766,7 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
                     input_ids,
                     attention_mask,
                     loss_mask,
-                    return_last_hidden_states=False,
+                    return_last_hidden_states=use_final_hidden_state,
                     return_logits=True,
                 )
             )
@@ -801,6 +811,22 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
             last_hidden_states_out = torch.cat(last_hidden_states_out, dim=0)
         else:
             last_hidden_states_out = None
+
+        if use_final_hidden_state:
+            assert (
+                last_hidden_states_out is not None
+            ), "use_final_hidden_state=True but the target backend returned no final hidden state"
+            # Fuse the final post-norm hidden state (lm_head input) as the 4th
+            # draft input: (B, seq, 3*H) -> (B, seq, 4*H). Both the residual aux
+            # layers and the final hidden are indexed at position t with NO
+            # left-shift (target/input_ids are shifted below), so the standard
+            # Eagle3 alignment is preserved -- the draft still combines
+            # position-t features with the embedding of token t+1 to predict
+            # token t+2 (not a trivial identity of the token h_final directly
+            # encodes, which is t+1 and is already given via its embedding).
+            aux_hidden_states_out = torch.cat(
+                [aux_hidden_states_out, last_hidden_states_out], dim=-1
+            )
 
         target_out = padding(target_out, left=False)
         input_ids_out = padding(input_ids_out, left=False)

@@ -335,6 +335,22 @@ def build_target_model(
         else:
             target_model.set_aux_hidden_states_layers()
 
+        # Crucible nemotron-finalhidden-aux: enable capture of the target's
+        # final post-norm hidden state (norm_f output == lm_head input) as a
+        # 4th fused draft input when the draft config requests it. This must
+        # agree with the draft's fc dim (num_aux_hidden_states == 4). Default
+        # off -> standard 3-layer Eagle3 for every other model.
+        if (
+            hasattr(draft_model_config, "eagle_config")
+            and draft_model_config.eagle_config is not None
+            and draft_model_config.eagle_config.get("use_final_hidden_state", False)
+        ):
+            target_model.use_final_hidden_state = True
+            print_on_rank0(
+                "[specforge] use_final_hidden_state=True: fusing target final "
+                "post-norm hidden state as 4th draft input (fc expects 4*H)."
+            )
+
         if args.is_vlm:
             processor = AutoProcessor.from_pretrained(
                 args.target_model_path,
