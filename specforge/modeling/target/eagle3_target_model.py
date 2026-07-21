@@ -325,6 +325,15 @@ class SGLangEagle3TargetModel(Eagle3TargetModel):
         )
 
         tp_rank = dist.get_rank(get_tp_group())
+        if tp_rank == 0:
+            # Crucible nemotron-fp32-extract: make the teacher-extraction SSM
+            # precision unambiguous in the training log so we can confirm fp32
+            # is active for the hybrid nemotron_h target.
+            print(
+                f"[specforge][sglang-backend] teacher dtype={dtype_arg} "
+                f"mamba_ssm_dtype={server_args.mamba_ssm_dtype!r}",
+                flush=True,
+            )
         moe_ep_rank = tp_rank // (server_args.tp_size // server_args.ep_size)
         model_config = ModelConfig.from_server_args(server_args)
         # - Added is_draft_worker=False parameter (new in 0.5.9)

@@ -112,6 +112,18 @@ class SGLangBackendArgs:
     # via to_kwargs() below.
     sglang_fp8_gemm_backend: str = "auto"
     sglang_moe_runner_backend: str = "auto"
+    # Crucible nemotron-fp32-extract (in-VM 2026-07-21, branch
+    # nemotron-fp32-extract-h200): forward sglang's --mamba-ssm-dtype into the
+    # in-process teacher-extraction engine so the Mamba-2 SSM prefill state is
+    # kept in fp32 (higher-precision teacher). Default "float32" to test a
+    # suspected degraded-teacher root cause for a low EAGLE-3 acc_0 ceiling on
+    # the hybrid nemotron_h target. Harmless no-op for dense targets: they have
+    # no Mamba layers, so ServerArgs only sets the SGLANG_MAMBA_SSM_DTYPE env
+    # var (which is never read) and, with sglang's default linear_attn_backend
+    # ="triton"/linear_attn_decode_backend=None, the SM100+ flashinfer-GDN
+    # bf16-required check never triggers. Pass "bfloat16" to restore the
+    # previous (implicit-bf16) behavior.
+    sglang_mamba_ssm_dtype: str = "float32"
 
     @staticmethod
     def add_args(parser: argparse.ArgumentParser) -> None:
@@ -205,6 +217,20 @@ class SGLangBackendArgs:
                 "as --sglang-fp8-gemm-backend but for the MoE expert-forward path."
             ),
         )
+        parser.add_argument(
+            "--sglang-mamba-ssm-dtype",
+            type=str,
+            default="float32",
+            choices=["float32", "bfloat16", "float16"],
+            help=(
+                "Forwarded to sglang's ServerArgs.mamba_ssm_dtype (the "
+                "--mamba-ssm-dtype flag). Controls the dtype of the Mamba-2 SSM "
+                "state during teacher hidden-state/logit extraction. Default "
+                "'float32' keeps the hybrid (nemotron_h) teacher in high precision; "
+                "harmless no-op for dense targets. Pass 'bfloat16' for the previous "
+                "implicit behavior."
+            ),
+        )
 
     @staticmethod
     def from_args(args: argparse.Namespace) -> "SGLangBackendArgs":
@@ -231,6 +257,9 @@ class SGLangBackendArgs:
             ),
             sglang_fp8_gemm_backend=getattr(args, "sglang_fp8_gemm_backend", "auto"),
             sglang_moe_runner_backend=getattr(args, "sglang_moe_runner_backend", "auto"),
+            sglang_mamba_ssm_dtype=getattr(
+                args, "sglang_mamba_ssm_dtype", "float32"
+            ),
         )
 
     def to_kwargs(self) -> Dict[str, Any]:
@@ -253,4 +282,7 @@ class SGLangBackendArgs:
             # `fp8_gemm_runner_backend` / `moe_runner_backend`.
             fp8_gemm_runner_backend=self.sglang_fp8_gemm_backend,
             moe_runner_backend=self.sglang_moe_runner_backend,
+            # Forwarded to sglang's ServerArgs.mamba_ssm_dtype; keeps the Mamba-2
+            # SSM prefill state in fp32 for the hybrid teacher (no-op for dense).
+            mamba_ssm_dtype=self.sglang_mamba_ssm_dtype,
         )
