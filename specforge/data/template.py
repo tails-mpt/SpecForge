@@ -141,6 +141,27 @@ TEMPLATE_REGISTRY.register(
     ),
 )
 
+# NVIDIA Nemotron-3.5-Nano, thinking-ON variant. Same model/tokenizer as `nemotron-h`,
+# but for on-policy corpora whose assistant `content` is the target's natural generation
+# `<think>REASONING</think>ANSWER`. The tokenizer's own jinja renders the FINAL assistant turn
+# with the reasoning intact (and strips reasoning from HISTORY turns) — so rendering is already
+# correct under the default GeneralParser. This variant exists ONLY to fix the loss-mask regex:
+# set_assistant_pattern (data/parse.py) builds `re.escape(assistant_header) + "([\\s\\S]*?(?:" +
+# re.escape(end_of_turn_token) + "|$))"`, so the masked span (group 1) starts right after
+# assistant_header. Using the common prefix `<|im_start|>assistant\n<think>` as the header makes
+# group 1 cover `REASONING</think>ANSWER<|im_end|>\n` — the non-greedy `[\s\S]*?` is already robust
+# to arbitrary reasoning between <think> and </think>, so no custom assistant_pattern_type is needed.
+# (The `nemotron-h` header `<think></think>` would fail to match a non-empty reasoning block.)
+TEMPLATE_REGISTRY.register(
+    name="nemotron-h-thinking",
+    template=ChatTemplate(
+        assistant_header="<|im_start|>assistant\n<think>",
+        user_header="<|im_start|>user\n",
+        system_prompt="",
+        end_of_turn_token="<|im_end|>\n",
+    ),
+)
+
 TEMPLATE_REGISTRY.register(
     name="phi3",
     template=ChatTemplate(
