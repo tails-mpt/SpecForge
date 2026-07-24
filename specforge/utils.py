@@ -180,8 +180,10 @@ def generate_draft_model_config(
             draft_config[draft_param] = value
 
     # Special handling for some parameters
-    # Ensure num_hidden_layers is always 1 (EAGLE3 feature)
-    draft_config["num_hidden_layers"] = 1
+    # EAGLE3 drafts default to a single decoder layer, but respect a template
+    # config that explicitly requests a deeper draft (num_hidden_layers > 1).
+    if "num_hidden_layers" not in draft_config:
+        draft_config["num_hidden_layers"] = 1
 
     # Keep some fixed draft model specific parameters
     draft_config["tie_word_embeddings"] = False

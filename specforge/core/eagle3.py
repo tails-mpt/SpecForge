@@ -256,8 +256,17 @@ class OnlineEagle3Model(Eagle3Model):
         adapter = self._make_adapter()
         # for sequence paralle, position mask and input ids will split by sequence dim, need to keep origin for ttt shift
         global_input_ids = input_ids
+        # Multi-layer drafts need one K/V cache per draft layer for the unroll;
+        # single-layer keeps the historical [[], []] structure (byte-identical).
+        n_draft_layers = (
+            getattr(getattr(self.draft_model, "config", None), "num_hidden_layers", 1)
+            or 1
+        )
         if self.attention_backend in ["sdpa", "fa", "usp"]:
-            cache_hidden = [[], []]
+            if n_draft_layers > 1:
+                cache_hidden = [[[], []] for _ in range(n_draft_layers)]
+            else:
+                cache_hidden = [[], []]
             past_key_values = None
         elif self.attention_backend == "flex_attention":
             cache_hidden = None
@@ -271,7 +280,11 @@ class OnlineEagle3Model(Eagle3Model):
                 # step k sees only position i-1's output from step k-1. Vanilla Eagle3
                 # cache_hidden accumulates global K/V across all prior steps; HASS resets
                 # it per step and shifts hidden_states right by 1 to create local context.
-                cache_hidden = [[], []]
+                cache_hidden = (
+                    [[[], []] for _ in range(n_draft_layers)]
+                    if n_draft_layers > 1
+                    else [[], []]
+                )
                 shifted = torch.zeros_like(hidden_states)
                 shifted[:, 1:, :] = hidden_states[:, :-1, :]
                 hidden_states = shifted

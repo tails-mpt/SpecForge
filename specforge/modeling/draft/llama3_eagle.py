@@ -511,9 +511,10 @@ class LlamaYarnRotaryEmbedding(LlamaRotaryEmbedding):
 class LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config):
+    def __init__(self, config, layer_idx: int = 0):
         super().__init__()
         self.config = config
+        self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         if hasattr(config, "head_dim"):
@@ -524,14 +525,21 @@ class LlamaAttention(nn.Module):
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.max_position_embeddings = config.max_position_embeddings
 
+        # Eagle3: the first draft layer (layer_idx == 0) concatenates the input
+        # embedding with the projected hidden state, so its QKV input width is
+        # 2*hidden_size. Deeper layers (num_hidden_layers > 1) are plain decoder
+        # layers with hidden_size input width. Mirrors vLLM llama_eagle3.py where
+        # qkv_input_size = 2*hidden if layer_idx == 0 else hidden.
+        qkv_input_size = self.hidden_size * 2 if layer_idx == 0 else self.hidden_size
+
         self.q_proj = nn.Linear(
-            self.hidden_size * 2, self.num_heads * self.head_dim, bias=False
+            qkv_input_size, self.num_heads * self.head_dim, bias=False
         )
         self.k_proj = nn.Linear(
-            self.hidden_size * 2, self.num_key_value_heads * self.head_dim, bias=False
+            qkv_input_size, self.num_key_value_heads * self.head_dim, bias=False
         )
         self.v_proj = nn.Linear(
-            self.hidden_size * 2, self.num_key_value_heads * self.head_dim, bias=False
+            qkv_input_size, self.num_key_value_heads * self.head_dim, bias=False
         )
         self.o_proj = nn.Linear(
             self.num_heads * self.head_dim, self.hidden_size, bias=False
@@ -979,8 +987,8 @@ class LlamaUSPFlashAttention(LlamaAttention):
     LlamaUSPFlashAttention with Trainable Ring Attention & Correct Eagle3 Branch Merging.
     """
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, layer_idx: int = 0):
+        super().__init__(config, layer_idx)
         assert (
             dist.is_initialized()
         ), f"LlamaUSPAttention requires torch.distributed; call init_distributed first."
@@ -1247,19 +1255,20 @@ class LlamaRMSNorm(nn.Module):
 
 
 class LlamaDecoderLayer(nn.Module):
-    def __init__(self, config, attention_backend: str = "sdpa"):
+    def __init__(self, config, attention_backend: str = "sdpa", layer_idx: int = 0):
         super().__init__()
         self.hidden_size = config.hidden_size
+        self.layer_idx = layer_idx
 
         if attention_backend == "sdpa":
-            self.self_attn = LlamaAttention(config=config)
+            self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
         elif attention_backend == "flex_attention":
             print_with_rank("Using flex attention on draft model training!")
-            self.self_attn = LlamaFlexAttention(config=config)
+            self.self_attn = LlamaFlexAttention(config=config, layer_idx=layer_idx)
         elif attention_backend == "fa":
-            self.self_attn = LlamaFlashAttention(config=config)
+            self.self_attn = LlamaFlashAttention(config=config, layer_idx=layer_idx)
         elif attention_backend == "usp":
-            self.self_attn = LlamaUSPFlashAttention(config=config)
+            self.self_attn = LlamaUSPFlashAttention(config=config, layer_idx=layer_idx)
         else:
             raise ValueError(f"Unknown attention backend {attention_backend}")
 
@@ -1303,10 +1312,20 @@ class LlamaDecoderLayer(nn.Module):
 
         residual = hidden_states
 
-        hidden_states = self.hidden_norm(hidden_states)
-        input_emb = self.input_layernorm(input_emb)
+        if self.layer_idx == 0:
+            # Eagle3 fusion layer: normalize the projected hidden state and the
+            # input embedding separately, then concatenate along the feature dim
+            # (QKV input width = 2*hidden_size). This is the historical behavior.
+            hidden_states = self.hidden_norm(hidden_states)
+            input_emb = self.input_layernorm(input_emb)
+            hidden_states = torch.cat((input_emb, hidden_states), dim=-1)
+        else:
+            # Deeper draft layer: a plain decoder step with no embedding concat
+            # (QKV input width = hidden_size). `hidden_norm` is intentionally
+            # unused here (it exists for weight-name parity with vLLM, whose
+            # layer_idx > 0 also builds but does not apply hidden_norm).
+            hidden_states = self.input_layernorm(hidden_states)
 
-        hidden_states = torch.cat((input_emb, hidden_states), dim=-1)
         # Self Attention
         hidden_states = self.self_attn(
             cache_hidden=cache_hidden,
@@ -1346,16 +1365,64 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
         self.embed_tokens = nn.Embedding(
             config.vocab_size, config.hidden_size, config.pad_token_id
         )
-        self.midlayer = LlamaDecoderLayer(config, attention_backend=attention_backend)
+        num_hidden_layers = getattr(config, "num_hidden_layers", 1) or 1
+        self.num_hidden_layers = num_hidden_layers
+        # Layer 0 keeps the historical attribute name `midlayer`, so a 1-layer
+        # checkpoint serializes byte-identically to today (`midlayer.*`) and vLLM's
+        # weight mapper (`midlayer.` -> `layers.0.`) still applies. Deeper layers
+        # live in a ModuleDict keyed by their integer index as a string, so they
+        # serialize as `layers.1.*`, `layers.2.*`, ... which vLLM's AutoWeightsLoader
+        # consumes directly (no `midlayer.` substring -> passthrough into vLLM's
+        # self.layers[i]). See the checkpoint-export note in the PR description.
+        self.midlayer = LlamaDecoderLayer(
+            config, attention_backend=attention_backend, layer_idx=0
+        )
+        self.layers = nn.ModuleDict(
+            {
+                str(i): LlamaDecoderLayer(
+                    config, attention_backend=attention_backend, layer_idx=i
+                )
+                for i in range(1, num_hidden_layers)
+            }
+        )
 
         if hasattr(config, "target_hidden_size"):
-            self.fc = torch.nn.Linear(
-                config.target_hidden_size * 3, config.hidden_size, bias=False
+            target_hidden_size = config.target_hidden_size
+        else:
+            target_hidden_size = config.hidden_size
+
+        # Number of auxiliary target hidden states fused by `fc` (Eagle3 uses 3:
+        # low / mid / high). Derived the same way vLLM does, so fc_norm chunking and
+        # the fc input width stay in lock-step.
+        num_aux = getattr(config, "num_aux_hidden_states", None)
+        if num_aux is None:
+            eagle_config = getattr(config, "eagle_config", None) or {}
+            if isinstance(eagle_config, dict):
+                layer_ids = eagle_config.get("eagle_aux_hidden_state_layer_ids")
+            else:
+                layer_ids = getattr(
+                    eagle_config, "eagle_aux_hidden_state_layer_ids", None
+                )
+            num_aux = len(layer_ids) if layer_ids else 3
+        self.num_aux = num_aux
+
+        self.fc = torch.nn.Linear(
+            target_hidden_size * num_aux, config.hidden_size, bias=False
+        )
+
+        # Optional per-aux-chunk RMSNorm applied to each aux hidden state before the
+        # `fc` GEMM (config-gated by `fc_norm`, default False -> byte-identical to
+        # today). Mirrors vLLM llama_eagle3.LlamaModel.fc_norm / combine_hidden_states:
+        # split the fused vector into num_aux chunks, RMSNorm each, concat, then fc.
+        if getattr(config, "fc_norm", False):
+            self.fc_norm = nn.ModuleList(
+                [
+                    LlamaRMSNorm(target_hidden_size, eps=config.rms_norm_eps)
+                    for _ in range(num_aux)
+                ]
             )
         else:
-            self.fc = torch.nn.Linear(
-                config.hidden_size * 3, config.hidden_size, bias=False
-            )
+            self.fc_norm = None
 
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.lm_head = nn.Linear(
@@ -1388,7 +1455,8 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
             cache_hidden = None
         else:
             print_with_rank(f"using ttt_length {ttt_length}, caching hidden states")
-            cache_hidden = [[], []]
+            # One K/V cache per draft layer for the multi-layer unroll.
+            cache_hidden = [[[], []] for _ in range(self.num_hidden_layers)]
 
         batch_size, seq_length, _ = hidden_states.size()
 
@@ -1406,18 +1474,20 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
             attention_mask, (batch_size, seq_length), hidden_states, 0
         )
 
-        # fc
-        hidden_states = self.fc(hidden_states)
-        hidden_states = self.midlayer(
-            input_emb=inputs_embeds,
-            hidden_states=hidden_states,
-            cache_hidden=cache_hidden,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=None,
-            output_attentions=False,
-            use_cache=False,
-        )
+        # fc (+ optional per-aux-chunk fc_norm)
+        hidden_states = self._fuse_hidden_states(hidden_states)
+        for i, layer in enumerate(self._ordered_layers()):
+            layer_cache = cache_hidden[i] if cache_hidden is not None else None
+            hidden_states = layer(
+                input_emb=inputs_embeds,
+                hidden_states=hidden_states,
+                cache_hidden=layer_cache,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=None,
+                output_attentions=False,
+                use_cache=False,
+            )
 
         # norm
         hidden_states = self.norm(hidden_states)
@@ -1427,10 +1497,32 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
+    def _ordered_layers(self) -> List[nn.Module]:
+        """Draft decoder layers in depth order: [midlayer (layer 0), layers.1, ...]."""
+        layers = [self.midlayer]
+        for i in range(1, self.num_hidden_layers):
+            layers.append(self.layers[str(i)])
+        return layers
+
+    def _fuse_hidden_states(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Fuse the concatenated aux hidden states into the draft hidden width.
+
+        When `fc_norm` is enabled, split the fused vector into `num_aux` equal
+        chunks, apply the per-chunk RMSNorm, concatenate, then the `fc` GEMM
+        (mirrors vLLM combine_hidden_states). When disabled, this is exactly
+        `self.fc(hidden_states)` (byte-identical to the historical path).
+        """
+        if self.fc_norm is not None:
+            chunks = hidden_states.chunk(self.num_aux, dim=-1)
+            hidden_states = torch.cat(
+                [norm(chunk) for norm, chunk in zip(self.fc_norm, chunks)], dim=-1
+            )
+        return self.fc(hidden_states)
+
     def project_hidden_states(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # eagle 3 requires hidden states from 3 layers
         assert hidden_states.size(-1) == self.config.hidden_size * 3
-        return self.fc(hidden_states)
+        return self._fuse_hidden_states(hidden_states)
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         norm_hidden_states = self.norm(hidden_states)
@@ -1446,13 +1538,33 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
         past_key_values: Optional[Cache] = None,
         use_cache: bool = True,
     ) -> torch.Tensor:
-        return self.midlayer(
-            input_emb=input_embeds,
-            hidden_states=hidden_states,
-            cache_hidden=cache_hidden,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            output_attentions=False,
-            use_cache=False,
-        )
+        layers = self._ordered_layers()
+        if len(layers) == 1:
+            # Single-layer draft: preserve the exact historical call. `cache_hidden`
+            # is the [[], []] structure allocated in eagle3.py (or None for flex).
+            return layers[0](
+                input_emb=input_embeds,
+                hidden_states=hidden_states,
+                cache_hidden=cache_hidden,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                output_attentions=False,
+                use_cache=False,
+            )
+        # Multi-layer draft: `cache_hidden` is a list of per-layer [[], []] caches
+        # (allocated in eagle3.py). Thread hidden_states through the stack; only
+        # layer 0 consumes input_embeds (deeper layers ignore it).
+        for i, layer in enumerate(layers):
+            layer_cache = cache_hidden[i] if cache_hidden is not None else None
+            hidden_states = layer(
+                input_emb=input_embeds,
+                hidden_states=hidden_states,
+                cache_hidden=layer_cache,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                output_attentions=False,
+                use_cache=False,
+            )
+        return hidden_states
