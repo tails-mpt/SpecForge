@@ -98,6 +98,23 @@ class TargetEmbeddingsAndHead(nn.Module):
                 index = json.load(f)
             weight_map = index.get("weight_map", {})
 
+            # Non-Qwen/Llama targets (e.g. nemotron_h) name the embedding differently
+            # (backbone.embeddings.weight, not model.embed_tokens.weight). Auto-resolve from the
+            # weight map when the default key is absent, so DFlash works across target architectures.
+            if embed_key not in weight_map:
+                cand = [
+                    k for k in weight_map
+                    if k.endswith("embed_tokens.weight") or k.endswith("embeddings.weight")
+                ]
+                if cand:
+                    print(f"embed_key '{embed_key}' absent; auto-resolved to '{cand[0]}'")
+                    embed_key = cand[0]
+            if lm_head_key not in weight_map:
+                cand = [k for k in weight_map if k.endswith("lm_head.weight")]
+                if cand:
+                    print(f"lm_head_key auto-resolved to '{cand[0]}'")
+                    lm_head_key = cand[0]
+
             if embed_key in weight_map:
                 files_to_load[embed_key] = weight_map[embed_key]
             else:
